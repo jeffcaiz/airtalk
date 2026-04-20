@@ -1,0 +1,17 @@
+# Smoke test for LID: pure English input should be reported as `en`.
+# Complements smoke_zh (zh) and smoke_ja (ja).
+name: smoke_en
+voice: en-US-JennyNeural
+
+segments:
+  - say: "Hello world, this is a short English test."
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.15
+  raw_must_contain: ["Hello", "English"]
+  language: en

@@ -482,7 +482,7 @@ Expected config layout:
 ```toml
 [llm]
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-model = "qwen-plus"
+model = "qwen-flash"
 api_key = ""                    # → AIRTALK_LLM_API_KEY env
 max_token_param = "max_tokens"
 disable = false
@@ -490,7 +490,7 @@ prompt_file = ""
 
 [asr]
 api_key = ""                    # → AIRTALK_ASR_API_KEY env
-lang = "zh"
+lang = "auto"                   # "auto"/"" → LID; or pin a code like "zh"/"en"
 hotwords_file = ""
 
 [vad]
@@ -670,7 +670,7 @@ AIRTALK_ASR_API_KEY=sk-... \
 AIRTALK_ASR_API_KEY=sk-... AIRTALK_LLM_API_KEY=sk-... \
   ./target/debug/airtalk-core \
     --llm-base-url https://dashscope.aliyuncs.com/compatible-mode/v1 \
-    --llm-model qwen-plus
+    --llm-model qwen-flash
 
 # Drive it by hand — NDJSON makes this trivial:
 printf '%s\n' '{"type":"begin","id":1,"vad":false}'

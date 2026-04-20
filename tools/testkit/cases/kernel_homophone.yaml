@@ -1,0 +1,35 @@
+# Context rescues homophone collapse — primary positive case.
+#
+# "The kernel panics at every byte." contains two classic homophone
+# traps:
+#   kernel / colonel   (acoustically near-identical)
+#   byte   / bite      (identical)
+#
+# Even with clean TTS audio, Qwen3-ASR collapses both to the everyday
+# pair ("colonel panics at every bite") when no context is given —
+# because that 4-gram is far more common in general language. See
+# `kernel_homophone_noctx.yaml` for the paired negative baseline that
+# locks in that collapse behavior.
+#
+# A minimal tech-anchor context ("Linux kernel development. Preserve
+# spelling: ...") flips both words. This case asserts the rescue.
+name: kernel_homophone
+voice: en-US-JennyNeural
+
+segments:
+  - say: "The kernel panics at every byte."
+
+core:
+  vad: true
+  no_llm: true
+  context: >-
+    Linux kernel development.
+    Preserve spelling: kernel, byte, daemon, cache, route.
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.15
+  raw_must_contain:
+    - "kernel"
+    - "byte"
+  language: en

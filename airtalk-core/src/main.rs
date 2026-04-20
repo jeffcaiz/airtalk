@@ -29,9 +29,10 @@ use crate::config::CoreConfig;
 struct Cli {
     // ─── ASR ──────────────────────────────────────────────────────────
     /// Default recognition language code passed to Qwen3-ASR (e.g. `zh`,
-    /// `en`). Use `auto` or empty to enable language identification.
-    /// Per-session `Begin.language` overrides this.
-    #[arg(long, default_value = "zh")]
+    /// `en`). Default is `auto` — language identification is on unless
+    /// the UI/session explicitly pins a language. Per-session
+    /// `Begin.language` overrides this.
+    #[arg(long, default_value = "auto")]
     asr_lang: String,
 
     /// Single ASR HTTP request timeout, in milliseconds.

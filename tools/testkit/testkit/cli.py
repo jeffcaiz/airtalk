@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
+from typing import Optional
 
 import yaml
 
@@ -84,13 +85,28 @@ def main() -> None:
     p_mic.add_argument(
         "--no-llm",
         action="store_true",
-        help="skip LLM cleanup (default: clean with qwen-plus)",
+        help="skip LLM cleanup (default: clean with qwen-flash)",
     )
     p_mic.add_argument(
         "--llm-base-url",
         default="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
-    p_mic.add_argument("--llm-model", default="qwen-plus")
+    p_mic.add_argument("--llm-model", default="qwen-flash")
+    p_mic.add_argument(
+        "--context",
+        help="ASR context / glossary sent with each begin frame "
+        "(domain hints, hotwords, anchor terms)",
+    )
+    p_mic.add_argument(
+        "--auto-lang",
+        action="store_true",
+        help="enable language identification: send language=\"auto\" "
+        "instead of inheriting core's default (usually zh)",
+    )
+    p_mic.add_argument(
+        "--context-file",
+        help="read ASR context from a file (wins over --context if both given)",
+    )
     p_mic.add_argument(
         "--save", help="save the recorded WAV to this path for replay"
     )
@@ -113,6 +129,13 @@ def main() -> None:
         from .miccheck import miccheck
 
         save_to = Path(args.save) if args.save else None
+
+        context: Optional[str] = None
+        if args.context_file:
+            context = Path(args.context_file).read_text(encoding="utf-8").strip()
+        elif args.context:
+            context = args.context
+
         try:
             exit_code = asyncio.run(
                 miccheck(
@@ -121,6 +144,8 @@ def main() -> None:
                     no_llm=args.no_llm,
                     llm_base_url=None if args.no_llm else args.llm_base_url,
                     llm_model=None if args.no_llm else args.llm_model,
+                    context=context,
+                    auto_lang=args.auto_lang,
                     save_to=save_to,
                 )
             )

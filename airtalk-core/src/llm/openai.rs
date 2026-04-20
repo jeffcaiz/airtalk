@@ -104,6 +104,10 @@ impl LlmProvider for OpenAiLlm {
         obj.insert("stream".into(), Value::Bool(false));
         obj.insert("temperature".into(), json!(0.2));
         obj.insert(self.config.max_token_param.clone(), json!(4096));
+        // Disable Qwen3's reasoning mode — cleanup is near-deterministic
+        // and thinking tokens just add latency. Non-Qwen OpenAI-compatible
+        // providers ignore unknown fields.
+        obj.insert("enable_thinking".into(), Value::Bool(false));
         let body = Value::Object(obj);
 
         let resp = self

@@ -1,0 +1,47 @@
+# Within-sentence self-priming — asymmetric rescue.
+#
+# Observed behavior (2026-04-20): the audio tail "...the nightmare of
+# Linux developers." rescues `kernel` from `colonel` via the audio
+# encoder's cross-attention, but does NOT rescue `byte` from `bite`.
+# Raw ASR output: "The kernel panics at every bite. The nightmare of
+# Linux developers." — kernel fixed, byte collapsed.
+#
+# Why the asymmetry: `kernel+Linux` is a strong bigram in pretraining,
+# so once the encoder sees "Linux" in the tail, cross-attention
+# successfully biases the earlier slot toward `kernel`. But
+# `at every bite` is a very strong generic English 3-gram
+# ("savor every bite", "enjoy every bite"), stronger than
+# `at every byte` even in tech corpora. The model optimizes local
+# fluency over global domain coherence and keeps `bite`.
+#
+# Implication: audio-encoder self-priming handles homophones with
+# strong domain collocations, but NOT homophones whose everyday variant
+# has an overwhelming generic collocation. For that class, explicit
+# external context (`Preserve spelling: byte`) is still required —
+# see kernel_homophone.yaml.
+#
+# This case locks in the "kernel + Linux rescued, byte lost" behavior.
+# If it starts failing differently, something changed in the model's
+# audio-to-text priming strength.
+name: kernel_self_prime
+voice: en-US-JennyNeural
+
+segments:
+  - say: "The kernel panics at every byte, the nightmare of Linux developers."
+
+core:
+  vad: true
+  no_llm: true
+  # no context — rescue (if any) must come from the audio tail itself
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.15
+  raw_must_contain:
+    - "kernel"
+    - "Linux"
+  # NOTE: `byte` is intentionally absent — the tail audio does not
+  # rescue it, and asserting it would lock in an aspirational behavior
+  # that currently fails. If the model ever starts producing `byte`
+  # here without external context, add it back.
+  language: en

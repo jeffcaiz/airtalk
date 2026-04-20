@@ -51,9 +51,16 @@ async def miccheck(
     no_llm: bool,
     llm_base_url: Optional[str],
     llm_model: Optional[str],
+    context: Optional[str],
+    auto_lang: bool,
     save_to: Optional[Path],
 ) -> int:
     print("miccheck — Ctrl+C at any time to quit.", file=sys.stderr)
+    if context:
+        preview = context if len(context) <= 80 else context[:77] + "..."
+        print(f"context: {preview}", file=sys.stderr)
+    if auto_lang:
+        print("language: auto (LID enabled)", file=sys.stderr)
 
     session = await CoreSession.spawn(
         core_bin=core_bin,
@@ -81,6 +88,8 @@ async def miccheck(
                     session,
                     vad=vad,
                     round_no=round_no,
+                    context=context,
+                    auto_lang=auto_lang,
                     save_to=save_to,
                 )
             except (KeyboardInterrupt, asyncio.CancelledError):
@@ -107,6 +116,8 @@ async def _one_round(
     *,
     vad: bool,
     round_no: int,
+    context: Optional[str],
+    auto_lang: bool,
     save_to: Optional[Path],
 ) -> None:
     sid = session.next_id()
@@ -128,7 +139,12 @@ async def _one_round(
 
     # Begin BEFORE the stream opens, so core is ready to receive chunks
     # as soon as audio starts arriving.
-    await session.send({"type": "begin", "id": sid, "vad": vad})
+    begin_frame: dict = {"type": "begin", "id": sid, "vad": vad}
+    if context:
+        begin_frame["context"] = context
+    if auto_lang:
+        begin_frame["language"] = "auto"
+    await session.send(begin_frame)
 
     stop_event = asyncio.Event()
 

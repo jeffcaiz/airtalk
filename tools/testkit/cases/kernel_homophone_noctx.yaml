@@ -1,0 +1,33 @@
+# Negative baseline for the homophone experiment — paired with
+# `kernel_homophone.yaml`. Identical TTS audio, only difference is
+# that no `core.context` is provided.
+#
+# Expected behavior: Qwen3-ASR collapses both homophones to the
+# everyday pair, producing "The colonel panics at every bite." This
+# case locks that collapse in with reverse assertions:
+#   - raw_must_contain: colonel, bite    (collapse happened)
+#   - raw_cer_max: 0.25                  (observed ≈0.19 against the
+#                                         kernel/byte reference text)
+#
+# If this case ever starts FAILING, it means Qwen3-ASR's default
+# language prior has improved enough to pick the tech reading on its
+# own — at which point the paired positive case's context is no
+# longer rescuing anything, and both cases should be reviewed.
+name: kernel_homophone_noctx
+voice: en-US-JennyNeural
+
+segments:
+  - say: "The kernel panics at every byte."
+
+core:
+  vad: true
+  no_llm: true
+  # no context — this is the whole point
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.25
+  raw_must_contain:
+    - "colonel"
+    - "bite"
+  language: en

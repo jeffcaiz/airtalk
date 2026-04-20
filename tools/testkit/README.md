@@ -43,7 +43,7 @@ For ad-hoc "does it actually work with my voice?" tests, `miccheck`
 records from the default input device and drives core in real time:
 
 ```bash
-# Defaults: vad=true, LLM cleanup via qwen-plus
+# Defaults: vad=true, LLM cleanup via qwen-flash
 uv run testkit miccheck
 
 # ASR only (skip LLM)

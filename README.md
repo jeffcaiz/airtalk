@@ -14,7 +14,7 @@ implementation notes.
 ## Status
 
 Core is complete and verified end-to-end against a real DashScope
-account (Qwen3-ASR + qwen-plus LLM cleanup). UI process not yet
+account (Qwen3-ASR + qwen-flash LLM cleanup). UI process not yet
 started. See DESIGN.md §Implementation status for the component
 breakdown.
 

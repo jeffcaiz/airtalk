@@ -1,0 +1,17 @@
+# Smoke test for LID: pure Japanese input should be reported as `ja`.
+# Complements smoke_zh (zh) and smoke_en (en).
+name: smoke_ja
+voice: ja-JP-NanamiNeural
+
+segments:
+  - say: "こんにちは、これは短い日本語のテストです。"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.20
+  raw_must_contain: ["日本語", "テスト"]
+  language: ja
