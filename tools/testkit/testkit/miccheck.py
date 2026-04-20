@@ -242,8 +242,15 @@ def _print_result(
         raw = resp.get("raw")
         lang = resp.get("language")
         print(f"text:     {text}")
-        if raw is not None and raw != text:
-            print(f"raw:      {raw}")
+        if raw is not None:
+            if raw != text:
+                print(f"raw:      {raw}")
+            else:
+                # Core always returns `raw`; suppressing when identical
+                # used to be ambiguous — could mean LLM skipped, or LLM
+                # ran but produced no change. Print a marker so the
+                # distinction from "no raw field" is visible.
+                print("raw:      (same as text)")
         if lang:
             print(f"language: {lang}")
     print(
