@@ -1,0 +1,20 @@
+# Chinese with embedded English technical terms. Qwen3-ASR handles
+# code-switching natively but CER on terms like "postcard" may suffer
+# without context — that's what the context_boost case covers.
+name: mixed_zh_en
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "我们使用 MessagePack 作为序列化格式。"
+  - silence: 900
+  - say: "后端走 WebSocket 协议进行推送。"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.25        # code-switching cost some slack
+  raw_must_contain: ["序列化", "协议"]
+  language: zh

@@ -1,0 +1,18 @@
+# Fast speech via Edge TTS prosody rate=+40%. Tests ASR's handling of
+# compressed phonemes. Qwen3-ASR is generally robust to 1.5x speed.
+name: fast_speech
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "这段语音以较快的语速朗读，用来测试识别器对压缩时域信号的鲁棒性。"
+    rate: "+40%"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.15
+  raw_must_contain: ["语速", "识别", "鲁棒"]
+  language: zh

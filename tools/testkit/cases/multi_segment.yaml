@@ -1,0 +1,19 @@
+name: multi_segment
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "我们来测试一下分段。"
+  - silence: 1200
+  - say: "这是第二段内容。"
+  - silence: 1000
+  - say: "最后一段结束。"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 3
+  raw_cer_max: 0.15
+  raw_must_contain: ["分段", "第二", "最后"]
+  language: zh

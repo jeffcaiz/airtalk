@@ -1,0 +1,26 @@
+# Long continuous monologue under sustained pink noise. Tests whether
+# CER degrades over the course of a long utterance in adversarial
+# conditions. Also checks VAD doesn't falsely close mid-monologue.
+name: combined_long_noisy
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: >
+      在复杂多变的真实使用场景中，语音识别系统需要同时应对多种挑战。
+      持续的背景噪声、说话人口音、专业术语以及上下文切换都会影响最终
+      的识别准确率。我们通过这个测试来观察在较长时间跨度内，识别器
+      在噪声环境下的稳定性如何。
+
+noise:
+  kind: pink
+  rms: 0.015
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.20
+  raw_must_contain: ["语音识别", "噪声", "准确率"]
+  language: zh

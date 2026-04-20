@@ -1,0 +1,21 @@
+name: with_white_noise
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "在白噪声背景下测试语音识别。"
+  - silence: 900
+  - say: "看看嘈杂环境中的表现如何。"
+
+noise:
+  kind: white
+  rms: 0.005      # ~-46 dBFS: quiet room ambience
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.20
+  raw_must_contain: ["白噪声", "嘈杂"]
+  language: zh

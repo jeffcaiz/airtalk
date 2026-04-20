@@ -1,0 +1,23 @@
+# Noise RMS on par with speech RMS. Expected to start breaking things:
+# either VAD miscounts segments or ASR CER spikes. Generous bounds so
+# we can see the degradation rather than hard-fail on setup.
+name: very_noisy
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "在非常嘈杂的环境下测试语音识别能力。"
+  - silence: 900
+  - say: "看看 VAD 是否还能正确切分出语音段。"
+
+noise:
+  kind: white
+  rms: 0.05           # ~-26 dBFS, comparable to normal speech level
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.50
+  language: zh

@@ -1,0 +1,37 @@
+[package]
+name = "airtalk-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Background computation process for airtalk"
+
+[[bin]]
+name = "airtalk-core"
+path = "src/main.rs"
+
+[dependencies]
+airtalk-proto = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# VAD
+ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "ndarray", "std"] }
+ndarray = "0.16"
+
+# Misc
+base64 = { workspace = true }
+
+[dev-dependencies]
+airtalk-proto = { workspace = true, features = ["tokio"] }
+wiremock = "0.6"
+serde_json = { workspace = true }
+tokio = { workspace = true }

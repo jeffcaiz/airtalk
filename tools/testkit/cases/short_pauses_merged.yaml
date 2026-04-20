@@ -1,0 +1,24 @@
+# Intent: pauses shorter than `vad_silence_ms` (800) should NOT
+# trigger segment splits. An earlier revision used multiple `say`
+# entries with short explicit silences, but Edge TTS tacks ~300–500ms
+# of natural tail-fade onto every phrase closure, so the effective
+# inter-phrase silence blew past 800ms and Silero split anyway.
+#
+# Using a single TTS utterance with internal commas is the honest
+# test: Edge renders commas as ~100–300ms natural pauses, well under
+# the threshold, so Silero stays in Speech state throughout.
+name: short_pauses_merged
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "第一个点，第二个点，第三个点，全部连在一起说。"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.15
+  raw_must_contain: ["第一", "第二", "第三"]
+  language: zh

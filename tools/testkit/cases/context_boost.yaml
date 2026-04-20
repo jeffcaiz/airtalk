@@ -1,0 +1,22 @@
+# Exercise Begin.context as glossary. Without context, Qwen3-ASR has
+# historically mangled niche terms like "postcard", "NDJSON", "Silero"
+# — we saw this in early manual testing. Passing them as context
+# biases recognition. This case asserts they all land cleanly.
+name: context_boost
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "我们的协议从 postcard 切换到了 MessagePack，最后定在 NDJSON。"
+  - silence: 900
+  - say: "音频检测用的是 Silero VAD 模型。"
+
+core:
+  vad: true
+  no_llm: true
+  context: "postcard, MessagePack, NDJSON, Silero, VAD, airtalk, DashScope, Qwen3-ASR"
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.18
+  raw_must_contain: ["postcard", "MessagePack", "NDJSON", "Silero"]
+  language: zh

@@ -1,0 +1,24 @@
+# Quiet speech (TTS volume -40%) — simulates a user mumbling or a
+# low-gain microphone. In earlier manual testing (real recording at
+# ~-26 dBFS peak) Silero completely failed to detect speech; our
+# context-prepending fix mostly resolved that. This case is a
+# regression guard for similar quiet-input scenarios.
+name: whisper_quiet
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "这是以较低音量朗读的测试内容。"
+    volume: "-40%"
+  - silence: 900
+  - say: "看看安静说话能否被正确识别。"
+    volume: "-40%"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.25
+  raw_must_contain: ["音量", "识别"]
+  language: zh

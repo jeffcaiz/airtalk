@@ -1,0 +1,26 @@
+# Three-axis stress: moderate pink noise + 30% faster speech + mixed
+# Chinese/English. Any single axis passes easily; compounding them is
+# more realistic.
+name: noisy_fast_mixed
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "我们使用 WebSocket 协议进行实时数据推送。"
+    rate: "+30%"
+  - silence: 900
+  - say: "后端采用 MessagePack 作为序列化方案。"
+    rate: "+30%"
+
+noise:
+  kind: pink
+  rms: 0.015
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.35
+  raw_must_contain: ["WebSocket", "推送", "序列化"]
+  language: zh

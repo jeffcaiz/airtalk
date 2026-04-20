@@ -1,0 +1,26 @@
+# Five short phrases with 1.2s pauses. Stress the segmented ASR +
+# BTreeMap reassembly path. asr_concurrency default is 2 so some
+# segments queue on the semaphore.
+name: many_short_segments
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "一个"
+  - silence: 1200
+  - say: "两个"
+  - silence: 1200
+  - say: "三个"
+  - silence: 1200
+  - say: "四个"
+  - silence: 1200
+  - say: "五个"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 5
+  raw_cer_max: 0.20
+  raw_must_contain: ["一", "两", "三", "四", "五"]
+  language: zh

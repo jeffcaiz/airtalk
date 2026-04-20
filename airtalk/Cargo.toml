@@ -1,0 +1,23 @@
+[package]
+name = "airtalk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native Windows UI for airtalk"
+
+[[bin]]
+name = "airtalk"
+path = "src/main.rs"
+
+[dependencies]
+airtalk-proto = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+
+# TODO: pull in as UI components land.
+# windows = { version = "0.58", features = [...] }
+# cpal = "0.15"
+# rubato = "0.16"         # resampling
+# tray-icon = "0.19"      # or a lower-level Shell_NotifyIcon wrapper

@@ -1,0 +1,40 @@
+# ─── Rust ──────────────────────────────────────────────────────────
+/target
+# Cargo.lock IS committed — workspace contains binary crates, so the
+# lockfile pins reproducible builds for releases and CI.
+Cargo.lock.bak
+*.log
+
+# ─── Python / testkit ──────────────────────────────────────────────
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Per-run outputs from testkit (generated WAVs etc.)
+tools/testkit/outputs/
+
+# ─── IDE / editor ──────────────────────────────────────────────────
+/.idea
+/.vscode
+*.swp
+*.swo
+*~
+
+# ─── OS cruft ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── Secrets / local env ───────────────────────────────────────────
+.env
+.env.local
+*.key
+*.pem
+
+# ─── Claude Code workspace state ───────────────────────────────────
+.claude/

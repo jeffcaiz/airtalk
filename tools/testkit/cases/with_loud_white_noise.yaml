@@ -1,0 +1,24 @@
+# 4x the noise of the baseline with_white_noise case. Silero VAD
+# trained with moderate noise exposure; at rms=0.02 (~-34 dBFS) the
+# boundary detection starts fraying. CER bound is wider to match.
+name: with_loud_white_noise
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "这是在较大白噪声背景下的语音识别测试。"
+  - silence: 900
+  - say: "希望 VAD 和 ASR 都能保持稳定的表现。"
+
+noise:
+  kind: white
+  rms: 0.02              # ~-34 dBFS, clearly audible hiss
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.30
+  raw_must_contain: ["白噪声", "识别"]
+  language: zh

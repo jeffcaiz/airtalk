@@ -1,0 +1,24 @@
+# Pink noise (1/f spectrum) — mimics HVAC / computer fan / air
+# conditioner hum more closely than white noise. Same RMS as our
+# baseline white-noise case for a fair comparison.
+name: with_pink_noise
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "在粉红噪声环境下测试识别质量。"
+  - silence: 900
+  - say: "粉红噪声的频谱更接近日常低频环境。"
+
+noise:
+  kind: pink
+  rms: 0.01
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 2
+  raw_cer_max: 0.20
+  raw_must_contain: ["粉红", "识别"]
+  language: zh

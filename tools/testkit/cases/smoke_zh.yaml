@@ -1,0 +1,15 @@
+name: smoke_zh
+voice: zh-CN-XiaoxiaoNeural
+
+segments:
+  - say: "你好世界，这是一个简短的测试。"
+
+core:
+  vad: true
+  no_llm: true
+
+expect:
+  segments_emitted: 1
+  raw_cer_max: 0.10
+  raw_must_contain: ["你好", "测试"]
+  language: zh
