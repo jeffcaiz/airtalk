@@ -1,224 +1,246 @@
-"""Render the 空 glyph + koe-style pill waveform into airtalk.ico + tray RGBA.
+"""Build Airtalk icons from a 16-unit SVG design.
 
 Run via `uv run iconlab`. Outputs:
-  tools/iconlab/out/airtalk.ico         (16/32/48/64/128/256, for .exe icon)
-  tools/iconlab/out/tray_icon.rgba      (32x32 raw RGBA, for tray-icon crate)
-  tools/iconlab/out/preview_<size>.png  (per-size previews for eyeballing)
+  tools/iconlab/out/icon-<size>.svg    source SVG per size
+  tools/iconlab/out/icon-<size>.png    rendered PNG per size
+  tools/iconlab/out/airtalk.ico        multi-size ICO for Windows
+  tools/iconlab/out/tray_icon.rgba     32x32 raw RGBA for tray-icon
 
-Also copies airtalk.ico + tray_icon.rgba into `airtalk/assets/`.
-
-Default font: 玄冬楷书 (Skr-ZERO/Xuandong-Kaishu, SIL OFL 1.1).
-First run downloads into `tools/iconlab/fonts/`.
-
-Composition (koe-inspired):
-  1. White background with subtle vertical depth
-  2. 5 pill-shaped vertical bars with blue→cyan vertical gradient,
-     drawn BEHIND the glyph. Heights form a symmetric arch.
-  3. 「空」glyph overlaid on top at low alpha, so the waveform shows
-     through the glyph strokes.
-
-Tune visuals by editing the CONFIG block below.
+Also copies `airtalk.ico` + `tray_icon.rgba` into `airtalk/assets/`.
 """
 
 from __future__ import annotations
 
 import argparse
+import base64
 import shutil
-import sys
 import urllib.request
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFont
 
-# ─── CONFIG (edit me) ──────────────────────────────────────────────────
+# Design tokens in a 16-unit viewBox.
+MASK_COLOR = "#0f172a"
+MASK_OPACITY = 0.85
+PAPER_COLOR = "#fbf6e4"
+KONG_COLOR = "#a8a29e"
 
-CHAR = "空"
+CORNER_RX = 3
 
-# Background — light.
-BG_TOP = (255, 255, 255, 255)
-BG_BOTTOM = (248, 251, 255, 255)     # tiny cool tint at bottom for depth
-
-# Waveform pill gradient (koe-style). Top = darker royal blue,
-# bottom = bright cyan. Feels lively under the soft glyph.
-BAR_TOP_RGB = (18, 85, 180)
-BAR_BOTTOM_RGB = (55, 190, 245)
-
-# Glyph: drawn ON TOP of the waveform at low alpha. The waveform
-# punches through wherever the glyph strokes cross it.
-GLYPH_RGB = (18, 60, 140)            # deep blue, slightly darker than BAR_TOP
-GLYPH_ALPHA = 0.32                   # 0..1; enough to read as a ghost
-GLYPH_SCALE = 0.85
-GLYPH_V_NUDGE = -0.02                # optical centering for CJK
-
-CORNER_RATIO = 0.1875                # rounded-square corner, 48/256
-
-# Waveform — 5 pill bars, symmetric arch (matches koe's reference icon).
-WAVEFORM_ENABLED_MIN_SIZE = 48
-WAVEFORM_HEIGHTS = [0.30, 0.62, 1.00, 0.62, 0.30]
-WAVEFORM_BAR_WIDTH_RATIO = 1 / 11    # pill thickness
-WAVEFORM_BAR_GAP_RATIO = 1 / 22
-WAVEFORM_BAND_TOP = 0.16             # band spans most of the icon height
-WAVEFORM_BAND_BOTTOM = 0.84
-
-SIZES = [16, 32, 48, 64, 128, 256]
-
-# Default font: 玄冬楷书 (Skr-ZERO/Xuandong-Kaishu), SIL OFL 1.1.
+KONG_MIN_SIZE = 48
+KONG_FONT_SIZE = 12
+FONT_FAMILY = "Zhi Mang Xing"
+DEFAULT_FONT_NAME = "ZhiMangXing-Regular.ttf"
 DEFAULT_FONT_URL = (
-    "https://raw.githubusercontent.com/Skr-ZERO/Xuandong-Kaishu/main/"
-    "%E7%8E%84%E5%86%AC%E6%A5%B7%E4%B9%A6.ttf"
+    "https://raw.githubusercontent.com/google/fonts/main/"
+    "ofl/zhimangxing/ZhiMangXing-Regular.ttf"
 )
-DEFAULT_FONT_NAME = "XuandongKaishu.ttf"
+
+GRADIENT_SOLID_END = 50
+GRADIENT_FADE_END = 100
+
+WAVE_BARS = [
+    (1, 6, 2, 4),
+    (4, 3, 2, 10),
+    (7, 1, 2, 14),
+    (10, 3, 2, 10),
+    (13, 6, 2, 4),
+]
+
+SIZES = [16, 24, 32, 48, 64, 96, 128, 192, 256, 512]
+ICO_SIZES = [16, 32, 48, 64, 128, 256]
+SUPERSAMPLE = 4
 
 
-# ─── Font resolution ───────────────────────────────────────────────────
+def ensure_font(fonts_dir: Path, override: Path | None) -> Path:
+    if override is not None:
+        if not override.exists():
+            raise FileNotFoundError(f"font not found: {override}")
+        return override
 
-def find_or_download_font(fonts_dir: Path) -> Path:
     fonts_dir.mkdir(parents=True, exist_ok=True)
     target = fonts_dir / DEFAULT_FONT_NAME
     if target.exists():
         return target
-    print(f"No {DEFAULT_FONT_NAME} in {fonts_dir}; downloading…")
+
+    print(f"missing {DEFAULT_FONT_NAME}; downloading")
     print(f"  {DEFAULT_FONT_URL}")
-    try:
-        urllib.request.urlretrieve(DEFAULT_FONT_URL, target)
-    except Exception as e:
-        print(f"\nDownload failed: {e}", file=sys.stderr)
-        print(
-            "\nFallback: grab any CJK-capable OTF/TTF and save to "
-            f"{target}, or pass --font <path>.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"Saved to {target}")
+    urllib.request.urlretrieve(DEFAULT_FONT_URL, target)
     return target
 
 
-# ─── Rendering ─────────────────────────────────────────────────────────
+def build_svg(size: int, font_path: Path) -> str:
+    include_kong = size >= KONG_MIN_SIZE
 
-def gradient_rounded_square(size: int, radius: int) -> Image.Image:
-    """RGBA icon base: vertical gradient, rounded-square mask."""
-    bg = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(bg)
-    for y in range(size):
-        t = y / max(1, size - 1)
-        col = tuple(int(BG_TOP[i] * (1 - t) + BG_BOTTOM[i] * t) for i in range(4))
-        draw.line([(0, y), (size - 1, y)], fill=col)
-
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, size - 1, size - 1), radius=radius, fill=255
-    )
-    out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    out.paste(bg, (0, 0), mask)
-    return out
-
-
-def draw_gradient_pill(
-    img: Image.Image,
-    cx: float,
-    cy: float,
-    width: float,
-    height: float,
-    top_rgb: tuple[int, int, int],
-    bottom_rgb: tuple[int, int, int],
-) -> None:
-    """Pill-shaped (fully rounded) bar with a vertical gradient. `width`
-    is the pill diameter; `height` clamps to at least `width` so the
-    rounded caps don't overlap."""
-    w = max(2, int(round(width)))
-    h = max(w, int(round(height)))
-    radius = w // 2
-
-    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    d = ImageDraw.Draw(canvas)
-    for y in range(h):
-        t = y / max(1, h - 1)
-        col = (
-            int(top_rgb[0] * (1 - t) + bottom_rgb[0] * t),
-            int(top_rgb[1] * (1 - t) + bottom_rgb[1] * t),
-            int(top_rgb[2] * (1 - t) + bottom_rgb[2] * t),
-            255,
+    font_face = ""
+    if include_kong:
+        b64 = base64.b64encode(font_path.read_bytes()).decode("ascii")
+        font_face = (
+            "<style>@font-face{"
+            "font-family:'ZMX';"
+            f"src:url('data:font/ttf;base64,{b64}') format('truetype');"
+            "}</style>"
         )
-        d.line([(0, y), (w - 1, y)], fill=col)
 
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, w - 1, h - 1), radius=radius, fill=255
+    font_stack = f"'ZMX','{FONT_FAMILY}','STXingkai','STKaiti','BiauKai',serif"
+
+    kong_grad = ""
+    kong_text = ""
+    if include_kong:
+        kong_grad = (
+            '<linearGradient id="g" gradientUnits="userSpaceOnUse" '
+            'x1="3" y1="3" x2="13" y2="13">'
+            f'<stop offset="0%" stop-color="{KONG_COLOR}" stop-opacity="1"/>'
+            f'<stop offset="{GRADIENT_SOLID_END}%" '
+            f'stop-color="{KONG_COLOR}" stop-opacity="1"/>'
+            f'<stop offset="{GRADIENT_FADE_END}%" '
+            f'stop-color="{KONG_COLOR}" stop-opacity="0"/>'
+            "</linearGradient>"
+        )
+        kong_text = (
+            f'<text x="8" y="8" text-anchor="middle" dominant-baseline="central" '
+            f'font-family="{font_stack}" font-size="{KONG_FONT_SIZE}" '
+            'fill="url(#g)">空</text>'
+        )
+
+    bars = "".join(
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="1" fill="black"/>'
+        for x, y, w, h in WAVE_BARS
     )
-    canvas.putalpha(mask)
 
-    img.alpha_composite(canvas, (int(round(cx - w / 2)), int(round(cy - h / 2))))
-
-
-def draw_waveform(img: Image.Image) -> None:
-    size = img.width
-    if size < WAVEFORM_ENABLED_MIN_SIZE:
-        return
-    band_top = size * WAVEFORM_BAND_TOP
-    band_bot = size * WAVEFORM_BAND_BOTTOM
-    band_h = band_bot - band_top
-    y_center = (band_top + band_bot) / 2
-
-    bar_w = max(2, int(round(size * WAVEFORM_BAR_WIDTH_RATIO)))
-    bar_gap = max(1, int(round(size * WAVEFORM_BAR_GAP_RATIO)))
-    n_bars = len(WAVEFORM_HEIGHTS)
-    total_w = n_bars * bar_w + (n_bars - 1) * bar_gap
-    start_x = (size - total_w) / 2
-
-    for i, h_norm in enumerate(WAVEFORM_HEIGHTS):
-        h = max(bar_w, band_h * h_norm)
-        cx = start_x + i * (bar_w + bar_gap) + bar_w / 2
-        draw_gradient_pill(img, cx, y_center, bar_w, h, BAR_TOP_RGB, BAR_BOTTOM_RGB)
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" '
+        f'width="{size}" height="{size}" viewBox="0 0 16 16">'
+        f"{font_face}"
+        "<defs>"
+        f'<clipPath id="c"><rect width="16" height="16" rx="{CORNER_RX}"/></clipPath>'
+        f'<mask id="m"><rect width="16" height="16" fill="white"/>{bars}</mask>'
+        f"{kong_grad}"
+        "</defs>"
+        '<g clip-path="url(#c)">'
+        f'<rect width="16" height="16" fill="{PAPER_COLOR}"/>'
+        f"{kong_text}"
+        f'<rect width="16" height="16" fill="{MASK_COLOR}" '
+        f'fill-opacity="{MASK_OPACITY}" mask="url(#m)"/>'
+        "</g>"
+        "</svg>"
+    )
 
 
-def draw_glyph_soft(img: Image.Image, size: int, font_path: Path) -> None:
-    """Draw the glyph as a semi-transparent overlay via alpha-composite."""
-    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    glyph_size = max(6, int(round(size * GLYPH_SCALE)))
-    font = ImageFont.truetype(str(font_path), glyph_size)
-    draw = ImageDraw.Draw(layer)
-    cx = size / 2
-    cy = size / 2 + size * GLYPH_V_NUDGE
-    draw.text(
-        (cx, cy),
-        CHAR,
+def hex_to_rgb(color: str) -> tuple[int, int, int]:
+    color = color.lstrip("#")
+    return tuple(int(color[index:index + 2], 16) for index in (0, 2, 4))
+
+
+def render_png(size: int, font_path: Path) -> Image.Image:
+    work_size = size * SUPERSAMPLE
+    scale = work_size / 16.0
+    include_kong = size >= KONG_MIN_SIZE
+
+    paper = Image.new("RGBA", (work_size, work_size), (0, 0, 0, 0))
+    paper_mask = Image.new("L", (work_size, work_size), 0)
+    paper_draw = ImageDraw.Draw(paper_mask)
+    radius = round(CORNER_RX * scale)
+    paper_draw.rounded_rectangle(
+        (0, 0, work_size - 1, work_size - 1),
+        radius=radius,
+        fill=255,
+    )
+    paper_color = (*hex_to_rgb(PAPER_COLOR), 255)
+    paper.paste(Image.new("RGBA", (work_size, work_size), paper_color), (0, 0), paper_mask)
+
+    if include_kong:
+        paper.alpha_composite(render_kong_layer(work_size, scale, font_path))
+
+    front = Image.new("RGBA", (work_size, work_size), (0, 0, 0, 0))
+    front_mask = paper_mask.copy()
+    front_draw = ImageDraw.Draw(front_mask)
+    for x, y, w, h in WAVE_BARS:
+        front_draw.rounded_rectangle(
+            (
+                round(x * scale),
+                round(y * scale),
+                round((x + w) * scale),
+                round((y + h) * scale),
+            ),
+            radius=max(1, round(scale)),
+            fill=0,
+        )
+
+    front_color = (*hex_to_rgb(MASK_COLOR), round(MASK_OPACITY * 255))
+    front.paste(Image.new("RGBA", (work_size, work_size), front_color), (0, 0), front_mask)
+
+    composited = Image.alpha_composite(paper, front)
+    return composited.resize((size, size), Image.Resampling.LANCZOS)
+
+
+def render_kong_layer(work_size: int, scale: float, font_path: Path) -> Image.Image:
+    font_size = max(1, round(KONG_FONT_SIZE * scale))
+    font = ImageFont.truetype(str(font_path), font_size)
+
+    text_mask = Image.new("L", (work_size, work_size), 0)
+    text_draw = ImageDraw.Draw(text_mask)
+    text_draw.text(
+        (work_size / 2, work_size / 2),
+        "空",
         font=font,
-        fill=(GLYPH_RGB[0], GLYPH_RGB[1], GLYPH_RGB[2], 255),
+        fill=255,
         anchor="mm",
     )
-    r, g, b, a = layer.split()
-    a = a.point(lambda v: int(v * GLYPH_ALPHA))
-    layer = Image.merge("RGBA", (r, g, b, a))
-    img.alpha_composite(layer)
+
+    gradient_alpha = Image.new("L", (work_size, work_size), 0)
+    pixels = gradient_alpha.load()
+    x1 = 3 * scale
+    y1 = 3 * scale
+    x2 = 13 * scale
+    y2 = 13 * scale
+    dx = x2 - x1
+    dy = y2 - y1
+    denom = dx * dx + dy * dy
+    solid = GRADIENT_SOLID_END / 100.0
+    fade = GRADIENT_FADE_END / 100.0
+
+    for y in range(work_size):
+        for x in range(work_size):
+            proj = ((x - x1) * dx + (y - y1) * dy) / denom
+            t = max(0.0, min(1.0, proj))
+            if t <= solid:
+                alpha = 255
+            elif t >= fade:
+                alpha = 0
+            else:
+                alpha = round(255 * (1.0 - (t - solid) / (fade - solid)))
+            pixels[x, y] = alpha
+
+    alpha_mask = ImageChops.multiply(text_mask, gradient_alpha)
+    layer = Image.new("RGBA", (work_size, work_size), (*hex_to_rgb(KONG_COLOR), 0))
+    layer.putalpha(alpha_mask)
+    return layer
 
 
-def render_icon(size: int, font_path: Path) -> Image.Image:
-    radius = max(1, int(round(size * CORNER_RATIO)))
-    img = gradient_rounded_square(size, radius)
-    draw_waveform(img)
-    draw_glyph_soft(img, size, font_path)
-    return img
+def save_ico(images: list[Image.Image], path: Path) -> None:
+    ico_images = [image for image in images if image.width in ICO_SIZES]
+    if not ico_images:
+        raise ValueError("no icon sizes available for ICO output")
 
-
-# ─── Output ────────────────────────────────────────────────────────────
-
-def save_ico(icons: list[Image.Image], path: Path) -> None:
-    sizes = [(img.width, img.height) for img in icons]
-    largest = max(icons, key=lambda i: i.width)
-    largest.save(str(path), format="ICO", sizes=sizes)
+    primary = max(ico_images, key=lambda image: image.width)
+    primary.save(
+        path,
+        format="ICO",
+        sizes=[(image.width, image.height) for image in ico_images],
+        append_images=[image for image in ico_images if image is not primary],
+    )
 
 
 def save_tray_rgba(icon_32: Image.Image, path: Path) -> None:
-    with open(path, "wb") as f:
-        f.write(icon_32.convert("RGBA").tobytes())
+    with open(path, "wb") as file:
+        file.write(icon_32.convert("RGBA").tobytes())
 
-
-# ─── Entry ─────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--no-copy", action="store_true")
-    parser.add_argument("--font", type=Path, help="Override default font path")
+    parser.add_argument("--font", type=Path, help="Path to ZhiMangXing-Regular.ttf")
     args = parser.parse_args()
 
     iconlab_root = Path(__file__).resolve().parents[1]
@@ -227,24 +249,28 @@ def main() -> None:
     out_dir = iconlab_root / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    font_path = args.font if args.font else find_or_download_font(fonts_dir)
-    print(f"Font: {font_path.name}")
+    font_path = ensure_font(fonts_dir, args.font)
+    print(f"font: {font_path}")
 
-    icons = [render_icon(s, font_path) for s in SIZES]
+    rendered: dict[int, Image.Image] = {}
+    for size in SIZES:
+        svg_text = build_svg(size, font_path)
+        svg_path = out_dir / f"icon-{size}.svg"
+        png_path = out_dir / f"icon-{size}.png"
+        svg_path.write_text(svg_text, encoding="utf-8")
+        image = render_png(size, font_path)
+        image.save(png_path)
+        rendered[size] = image
+        tag = "w/ 空" if size >= KONG_MIN_SIZE else "plain"
+        print(f"  {size:>4}x{size:<4} [{tag}]")
 
     ico_path = out_dir / "airtalk.ico"
-    save_ico(icons, ico_path)
+    save_ico([rendered[size] for size in SIZES], ico_path)
     print(f"wrote {ico_path.relative_to(iconlab_root)}")
 
-    icon_32 = next(i for i in icons if i.width == 32)
     tray_path = out_dir / "tray_icon.rgba"
-    save_tray_rgba(icon_32, tray_path)
+    save_tray_rgba(rendered[32], tray_path)
     print(f"wrote {tray_path.relative_to(iconlab_root)}")
-
-    for img in icons:
-        p = out_dir / f"preview_{img.width}.png"
-        img.save(p)
-    print(f"wrote preview_*.png ({len(icons)} sizes)")
 
     if not args.no_copy:
         assets = airtalk_root / "airtalk" / "assets"
