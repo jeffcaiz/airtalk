@@ -6,6 +6,10 @@
 /// `Begin` may override them via its `language` / `enable_itn` fields.
 /// See DESIGN.md §Protocol.
 ///
+/// Audio encoding (`--asr-audio-format`) is also a startup-level
+/// choice but lives entirely inside `QwenAsr` — the session actor
+/// never sees it, so it's not threaded through here.
+///
 /// Any change requires restarting the core process (UI side restarts
 /// `airtalk-core.exe` whenever the user saves settings — see DESIGN.md
 /// §Config lifecycle).

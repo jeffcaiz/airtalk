@@ -417,7 +417,11 @@ impl VadEngine for SileroEngine {
         } else {
             0.0
         };
-        log::info!(
+        // Demoted from info → debug once `SessionStats.vad_segments`
+        // became the authoritative segment count on the response. The
+        // max_prob / avg_prob / threshold bits are still useful for
+        // tuning — run with `--log-level debug` to see them.
+        log::debug!(
             "VAD summary: frames={} max_prob={:.3} avg_prob={:.3} segments_emitted={} \
              thresholds(speech={:.2}, silence={:.2}, end_ms={}, min_ms={})",
             self.frames_processed,

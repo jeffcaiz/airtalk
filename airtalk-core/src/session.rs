@@ -9,8 +9,9 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Instant;
 
-use airtalk_proto::{Request, Response};
+use airtalk_proto::{AsrUsage, LlmUsage, Request, Response, SessionStats};
 use tokio::sync::{mpsc, Semaphore};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -19,6 +20,45 @@ use crate::asr::{AsrOutput, AsrProvider, AsrRequest};
 use crate::config::CoreConfig;
 use crate::llm::LlmProvider;
 use crate::vad::VadFactory;
+
+/// PCM16 LE 16 kHz mono → milliseconds. 32 bytes = 1 ms.
+#[inline]
+fn pcm_bytes_to_ms(bytes: usize) -> u32 {
+    // 16 kHz * 2 bytes/sample = 32_000 bytes/sec = 32 bytes/ms
+    ((bytes as u64) / 32) as u32
+}
+
+/// Sum two AsrUsage values field-by-field, treating `None` as zero
+/// for the purpose of accumulation. Returns `None` if both inputs
+/// contribute no data at all.
+fn merge_asr_usage(a: Option<AsrUsage>, b: Option<AsrUsage>) -> Option<AsrUsage> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (Some(x), Some(y)) => Some(AsrUsage {
+            audio_seconds: sum_opt_f64(x.audio_seconds, y.audio_seconds),
+            input_tokens: sum_opt_u64(x.input_tokens, y.input_tokens),
+            output_tokens: sum_opt_u64(x.output_tokens, y.output_tokens),
+            total_tokens: sum_opt_u64(x.total_tokens, y.total_tokens),
+        }),
+    }
+}
+
+fn sum_opt_u64(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (Some(x), Some(y)) => Some(x.saturating_add(y)),
+    }
+}
+
+fn sum_opt_f64(a: Option<f64>, b: Option<f64>) -> Option<f64> {
+    match (a, b) {
+        (None, None) => None,
+        (Some(x), None) | (None, Some(x)) => Some(x),
+        (Some(x), Some(y)) => Some(x + y),
+    }
+}
 
 // ─── Public surface ────────────────────────────────────────────────────
 
@@ -365,6 +405,9 @@ struct PipelineOutput {
     /// Language reported by Qwen3-ASR. First segment's language when
     /// VAD-segmented; whatever the single call returned otherwise.
     language: Option<String>,
+    /// All the observable stats for this session. Fully populated by
+    /// the helpers below; `run_pipeline` forwards it unchanged.
+    stats: SessionStats,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -413,6 +456,7 @@ async fn run_pipeline(
                 text: out.text,
                 raw: Some(out.raw),
                 language: out.language,
+                stats: out.stats,
             },
             Err(PipelineError::Cancelled) => {
                 // Defensive: only reachable if cancel got set between
@@ -444,8 +488,16 @@ async fn run_segmented(
 ) -> Result<PipelineOutput, PipelineError> {
     let mut vad = vad_factory.create();
     let sem = Arc::new(Semaphore::new(config.asr_concurrency.max(1)));
-    let mut asr_tasks: JoinSet<(u64, anyhow::Result<AsrOutput>)> = JoinSet::new();
+    // Each spawned task reports `(seq, Result<(output, wall-clock duration)>)`
+    // so Phase 2 can take the max per-call latency — that's the real
+    // "ASR bottleneck" number, independent of when the call was spawned.
+    let mut asr_tasks: JoinSet<(u64, anyhow::Result<(AsrOutput, std::time::Duration)>)> =
+        JoinSet::new();
     let mut next_seq: u64 = 0;
+
+    // Stats accumulators.
+    let mut pcm_received_bytes: usize = 0;
+    let mut pcm_sent_to_asr_bytes: usize = 0;
 
     // Phase 1: read audio, push to VAD, spawn ASR per segment.
     loop {
@@ -454,7 +506,9 @@ async fn run_segmented(
             _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
             recv = audio_rx.recv() => match recv {
                 Some(pcm) => {
+                    pcm_received_bytes += pcm.len();
                     for seg in vad.push_pcm(&pcm) {
+                        pcm_sent_to_asr_bytes += seg.pcm.len();
                         spawn_asr_task(
                             &mut asr_tasks,
                             sem.clone(),
@@ -470,11 +524,11 @@ async fn run_segmented(
             }
         }
     }
+    let end_received_at = Instant::now();
 
     // Trailing speech without a closing silence becomes the final segment.
-    // No increment needed on `next_seq` after this — no further segments
-    // will be spawned.
     if let Some(tail) = vad.finish() {
+        pcm_sent_to_asr_bytes += tail.pcm.len();
         spawn_asr_task(
             &mut asr_tasks,
             sem.clone(),
@@ -483,16 +537,24 @@ async fn run_segmented(
             next_seq,
             tail.pcm,
         );
+        next_seq += 1;
     }
 
-    // Phase 2: collect ASR results, reassemble by seq.
+    // Phase 2: collect ASR results + each call's wall-clock duration.
     let mut results: BTreeMap<u64, AsrOutput> = BTreeMap::new();
+    let mut max_asr_call_ms: u32 = 0;
     loop {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
             joined = asr_tasks.join_next() => match joined {
-                Some(Ok((seq, Ok(out)))) => { results.insert(seq, out); }
+                Some(Ok((seq, Ok((out, dur))))) => {
+                    results.insert(seq, out);
+                    let ms = dur.as_millis() as u32;
+                    if ms > max_asr_call_ms {
+                        max_asr_call_ms = ms;
+                    }
+                }
                 Some(Ok((seq, Err(e)))) => {
                     return Err(classify_provider_err(
                         e.context(format!("seq {seq}")),
@@ -506,15 +568,21 @@ async fn run_segmented(
             }
         }
     }
+    let asr_latency_ms = max_asr_call_ms;
 
     if results.is_empty() {
         return Err(PipelineError::NoAudio);
     }
 
+    let asr_calls = results.len() as u32;
+    let asr_upload_bytes: u64 = results.values().map(|o| o.upload_bytes).sum();
+    let mut asr_usage_acc: Option<AsrUsage> = None;
+    for o in results.values() {
+        asr_usage_acc = merge_asr_usage(asr_usage_acc, o.usage.clone());
+    }
+
     // First segment by seq drives the reported language.
-    let language = results
-        .values()
-        .find_map(|o| o.language.clone());
+    let language = results.values().find_map(|o| o.language.clone());
 
     let raw = results
         .into_values()
@@ -523,20 +591,42 @@ async fn run_segmented(
         .join(" ");
 
     // Phase 3: LLM cleanup (or pass-through).
-    let text = if params.llm_enabled {
-        let prompt = build_llm_prompt(&config.llm_prompt, params.context.as_deref());
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
-            res = llm.cleanup(&raw, &prompt) => {
-                res.map_err(|e| classify_provider_err(e, ProviderStage::Llm))?
-            }
-        }
-    } else {
-        raw.clone()
+    let (text, llm_latency_ms, llm_usage): (String, Option<u32>, Option<LlmUsage>) =
+        if params.llm_enabled {
+            let prompt = build_llm_prompt(&config.llm_prompt, params.context.as_deref());
+            let llm_start = Instant::now();
+            let out = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
+                res = llm.cleanup(&raw, &prompt) => {
+                    res.map_err(|e| classify_provider_err(e, ProviderStage::Llm))?
+                }
+            };
+            let elapsed = llm_start.elapsed().as_millis() as u32;
+            (out.text, Some(elapsed), out.usage)
+        } else {
+            (raw.clone(), None, None)
+        };
+
+    let stats = SessionStats {
+        pcm_received_ms: pcm_bytes_to_ms(pcm_received_bytes),
+        pcm_sent_to_asr_ms: pcm_bytes_to_ms(pcm_sent_to_asr_bytes),
+        vad_segments: Some(next_seq as u32),
+        asr_calls,
+        asr_upload_bytes,
+        asr_latency_ms,
+        llm_latency_ms,
+        total_latency_ms: end_received_at.elapsed().as_millis() as u32,
+        asr_usage: asr_usage_acc,
+        llm_usage,
     };
 
-    Ok(PipelineOutput { text, raw, language })
+    Ok(PipelineOutput {
+        text,
+        raw,
+        language,
+        stats,
+    })
 }
 
 async fn run_single(
@@ -558,11 +648,15 @@ async fn run_single(
             }
         }
     }
+    let end_received_at = Instant::now();
 
     if buf.is_empty() {
         return Err(PipelineError::NoAudio);
     }
 
+    let pcm_bytes = buf.len();
+
+    let asr_start = Instant::now();
     let asr_out = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
@@ -575,28 +669,53 @@ async fn run_single(
             res.map_err(|e| classify_provider_err(e, ProviderStage::Asr))?
         }
     };
+    let asr_latency_ms = asr_start.elapsed().as_millis() as u32;
 
     let raw = asr_out.text;
     let language = asr_out.language;
+    let asr_upload_bytes = asr_out.upload_bytes;
+    let asr_usage = asr_out.usage;
 
-    let text = if params.llm_enabled {
-        let prompt = build_llm_prompt(&config.llm_prompt, params.context.as_deref());
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
-            res = llm.cleanup(&raw, &prompt) => {
-                res.map_err(|e| classify_provider_err(e, ProviderStage::Llm))?
-            }
-        }
-    } else {
-        raw.clone()
+    let (text, llm_latency_ms, llm_usage): (String, Option<u32>, Option<LlmUsage>) =
+        if params.llm_enabled {
+            let prompt = build_llm_prompt(&config.llm_prompt, params.context.as_deref());
+            let llm_start = Instant::now();
+            let out = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
+                res = llm.cleanup(&raw, &prompt) => {
+                    res.map_err(|e| classify_provider_err(e, ProviderStage::Llm))?
+                }
+            };
+            let elapsed = llm_start.elapsed().as_millis() as u32;
+            (out.text, Some(elapsed), out.usage)
+        } else {
+            (raw.clone(), None, None)
+        };
+
+    let stats = SessionStats {
+        pcm_received_ms: pcm_bytes_to_ms(pcm_bytes),
+        pcm_sent_to_asr_ms: pcm_bytes_to_ms(pcm_bytes),
+        vad_segments: None,
+        asr_calls: 1,
+        asr_upload_bytes,
+        asr_latency_ms,
+        llm_latency_ms,
+        total_latency_ms: end_received_at.elapsed().as_millis() as u32,
+        asr_usage,
+        llm_usage,
     };
 
-    Ok(PipelineOutput { text, raw, language })
+    Ok(PipelineOutput {
+        text,
+        raw,
+        language,
+        stats,
+    })
 }
 
 fn spawn_asr_task(
-    set: &mut JoinSet<(u64, anyhow::Result<AsrOutput>)>,
+    set: &mut JoinSet<(u64, anyhow::Result<(AsrOutput, std::time::Duration)>)>,
     sem: Arc<Semaphore>,
     asr: Arc<dyn AsrProvider>,
     params: Arc<SessionParams>,
@@ -608,6 +727,10 @@ fn spawn_asr_task(
             Ok(p) => p,
             Err(e) => return (seq, Err(anyhow::anyhow!("semaphore closed: {e}"))),
         };
+        // Time only the HTTP call itself — excluding semaphore wait —
+        // so the number reflects provider latency, not how long we
+        // queued behind other concurrent segments.
+        let start = Instant::now();
         let res = asr
             .transcribe(AsrRequest {
                 pcm: &pcm,
@@ -616,7 +739,8 @@ fn spawn_asr_task(
                 enable_itn: params.enable_itn,
             })
             .await;
-        (seq, res)
+        let elapsed = start.elapsed();
+        (seq, res.map(|out| (out, elapsed)))
     });
 }
 

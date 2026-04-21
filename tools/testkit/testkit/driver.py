@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -19,7 +18,10 @@ class CoreRun:
     response: Optional[dict]
     exit_code: int
     stderr: str
-    vad_segments: Optional[int]  # parsed from stderr "segments_emitted=N"
+    # Convenience alias for `response["stats"]["vad_segments"]`. `None`
+    # when core didn't produce a Result (error / timeout) or when the
+    # session had `vad=False`.
+    vad_segments: Optional[int]
     elapsed_s: float
 
 
@@ -127,7 +129,17 @@ async def run_core(
     elapsed = asyncio.get_event_loop().time() - started
     exit_code = proc.returncode if proc.returncode is not None else -1
     stderr_str = stderr.decode("utf-8", errors="replace")
-    vad_segments = _parse_segments(stderr_str)
+
+    # Segment count comes from the protocol's SessionStats now — core
+    # exposes it as a first-class field on every Result. Pre-stats
+    # cores used to log "segments_emitted=N" to stderr; that path is
+    # retired.
+    vad_segments: Optional[int] = None
+    if terminal is not None and terminal.get("type") == "result":
+        stats = terminal.get("stats") or {}
+        vs = stats.get("vad_segments")
+        if isinstance(vs, int):
+            vad_segments = vs
 
     return CoreRun(
         response=terminal,
@@ -136,13 +148,3 @@ async def run_core(
         vad_segments=vad_segments,
         elapsed_s=elapsed,
     )
-
-
-_SEGMENTS_RE = re.compile(r"segments_emitted=(\d+)")
-
-
-def _parse_segments(stderr: str) -> Optional[int]:
-    match = _SEGMENTS_RE.search(stderr)
-    if match:
-        return int(match.group(1))
-    return None

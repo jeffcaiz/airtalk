@@ -27,6 +27,14 @@ serde_json = { workspace = true }
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["download-binaries", "ndarray", "std"] }
 ndarray = "0.16"
 
+# Audio codec (Opus for ASR upload). See asr/audio.rs.
+# audiopus_sys's `static` feature tells it to vendor + build libopus
+# (via cmake) and statically link it. audiopus itself is the higher-
+# level safe API layer.
+audiopus = "0.3.0-rc.0"
+audiopus_sys = { version = "0.2", features = ["static"] }
+crc = "3"
+
 # Misc
 base64 = { workspace = true }
 

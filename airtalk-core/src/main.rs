@@ -11,6 +11,7 @@ mod session;
 mod vad;
 
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use clap::Parser;
 use tokio::io::{stdin, stdout, BufReader};
 use tokio::sync::mpsc;
 
+use crate::asr::audio::AudioFormat;
 use crate::config::CoreConfig;
 
 #[derive(Parser, Debug)]
@@ -58,6 +60,14 @@ struct Cli {
     #[arg(long)]
     asr_enable_itn: bool,
 
+    /// Audio encoding used when uploading to Qwen3-ASR. One of:
+    /// `wav` (PCM16/16k/mono in RIFF, lossless, ~32 KB/s), `opus`
+    /// (Opus @ 24 kbps in Ogg, default, ~3 KB/s), or `opus:<bitrate>`
+    /// where bitrate is e.g. `16k`, `24k`, `32k`, or a literal bps
+    /// number like `24000`.
+    #[arg(long, default_value = "opus:24k")]
+    asr_audio_format: String,
+
     /// Optional hotwords file, one per line. Lines starting with `#`
     /// are treated as comments. Prepended to every session's context
     /// (on top of per-session `Begin.context`).
@@ -65,16 +75,25 @@ struct Cli {
     hotwords_file: Option<PathBuf>,
 
     // ─── LLM ──────────────────────────────────────────────────────────
-    /// OpenAI-compatible base URL (e.g. https://dashscope.aliyuncs.com/compatible-mode/v1).
-    /// Required unless `--no-llm` is set.
-    #[arg(long)]
-    llm_base_url: Option<String>,
+    /// OpenAI-compatible base URL. Default points at DashScope Bailian
+    /// (mainland region); for other providers (DeepSeek, Moonshot,
+    /// OpenAI itself, etc.) override this.
+    #[arg(
+        long,
+        default_value = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )]
+    llm_base_url: String,
 
-    /// Model ID. Required unless `--no-llm` is set.
-    #[arg(long)]
-    llm_model: Option<String>,
+    /// Model ID to use for cleanup. Default `qwen-flash` (cheap/fast
+    /// on DashScope); swap if you change `--llm-base-url`.
+    #[arg(long, default_value = "qwen-flash")]
+    llm_model: String,
 
-    /// Parameter name for max tokens (some providers use `max_completion_tokens`).
+    /// **JSON field name** for the max-tokens cap in the chat request
+    /// body — NOT the value. The value itself is hardcoded to 4096
+    /// (cleanup output is always tiny, so the cap is just a safety
+    /// bound). Most providers accept `max_tokens`; newer OpenAI models
+    /// (o1 family) require `max_completion_tokens` instead.
     #[arg(long, default_value = "max_tokens")]
     llm_max_token_param: String,
 
@@ -82,7 +101,8 @@ struct Cli {
     #[arg(long, default_value_t = 30_000)]
     llm_timeout_ms: u64,
 
-    /// LLM provider API key. Required unless `--no-llm` is set.
+    /// LLM provider API key. Required unless `--no-llm` is set. Can
+    /// also come from `AIRTALK_LLM_API_KEY` in the environment.
     #[arg(long, env = "AIRTALK_LLM_API_KEY")]
     llm_api_key: Option<String>,
 
@@ -139,6 +159,10 @@ async fn main() -> anyhow::Result<()> {
     let prompt = prompt::load(args.llm_prompt_file.as_deref())
         .context("loading LLM prompt")?;
 
+    let asr_audio_format = AudioFormat::from_str(&args.asr_audio_format)
+        .with_context(|| format!("parsing --asr-audio-format {:?}", args.asr_audio_format))?;
+    log::info!("asr audio format: {asr_audio_format:?}");
+
     let config = Arc::new(CoreConfig {
         asr_default_language: args.asr_lang.clone(),
         asr_concurrency: args.asr_concurrency,
@@ -153,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
             args.asr_base_url.clone(),
             args.asr_api_key.clone(),
             Duration::from_millis(args.asr_timeout_ms),
+            asr_audio_format,
         )
         .context("building Qwen ASR client")?,
     );
@@ -160,23 +185,18 @@ async fn main() -> anyhow::Result<()> {
     let llm: Arc<dyn llm::LlmProvider> = if args.no_llm {
         Arc::new(llm::DisabledLlm)
     } else {
-        let base_url = args
-            .llm_base_url
-            .clone()
-            .context("--llm-base-url is required unless --no-llm is set")?;
-        let model = args
-            .llm_model
-            .clone()
-            .context("--llm-model is required unless --no-llm is set")?;
+        // URL and model always have defaults (DashScope + qwen-flash);
+        // only the API key is strictly required. The env-var fallback
+        // on `llm_api_key` already covers the common case.
         let api_key = args
             .llm_api_key
             .clone()
             .context("--llm-api-key (or AIRTALK_LLM_API_KEY) is required unless --no-llm is set")?;
         Arc::new(
             llm::openai::OpenAiLlm::new(llm::openai::OpenAiConfig {
-                base_url,
+                base_url: args.llm_base_url.clone(),
                 api_key,
-                model,
+                model: args.llm_model.clone(),
                 max_token_param: args.llm_max_token_param.clone(),
                 timeout: Duration::from_millis(args.llm_timeout_ms),
             })

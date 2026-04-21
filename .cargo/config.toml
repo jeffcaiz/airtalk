@@ -1,0 +1,9 @@
+# Workspace-wide cargo configuration.
+#
+# CMAKE_POLICY_VERSION_MINIMUM: audiopus_sys vendors libopus sources
+# whose top-level CMakeLists.txt uses pre-3.5 syntax that modern cmake
+# (4.x) removed support for. This env var tells cmake to use 3.5-era
+# policy defaults for projects that don't declare a minimum. Without
+# it, audiopus_sys fails to configure during build.
+[env]
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

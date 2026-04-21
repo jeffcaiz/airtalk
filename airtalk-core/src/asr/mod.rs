@@ -1,7 +1,9 @@
 //! ASR provider trait and implementations.
 
+use airtalk_proto::AsrUsage;
 use async_trait::async_trait;
 
+pub mod audio;
 pub mod qwen;
 
 /// Per-call ASR request.
@@ -25,6 +27,12 @@ pub struct AsrOutput {
     /// Language reported by Qwen3-ASR. `None` if the provider didn't
     /// surface one (or stub).
     pub language: Option<String>,
+    /// Encoded audio bytes sent to the provider (post-format encoding,
+    /// pre-base64). Lets the pipeline report real on-the-wire volume
+    /// regardless of `--asr-audio-format` choice.
+    pub upload_bytes: u64,
+    /// Provider-reported usage block, when present in the response.
+    pub usage: Option<AsrUsage>,
 }
 
 #[async_trait]

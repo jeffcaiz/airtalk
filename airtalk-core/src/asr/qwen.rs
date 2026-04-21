@@ -14,7 +14,7 @@
 //!   "input": {
 //!     "messages": [
 //!       {"role": "system", "content": [{"text": "<context>"}]},
-//!       {"role": "user",   "content": [{"audio": "data:audio/wav;base64,…"}]}
+//!       {"role": "user",   "content": [{"audio": "data:audio/ogg;base64,…"}]}
 //!     ]
 //!   },
 //!   "parameters": {
@@ -33,10 +33,10 @@
 //! * `enable_lid` is automatically `true` when `AsrRequest.language`
 //!   is `None` (i.e. caller wants auto-detection), and `false` when
 //!   an explicit language is pinned.
-//! * Audio is PCM16 LE 16 kHz mono wrapped in a 44-byte RIFF/WAVE
-//!   header and base64-encoded as a data URI. DashScope also accepts
-//!   uploaded file URLs, but inline is simpler for sub-3-min
-//!   utterances (our case — one hotkey-held phrase).
+//! * Audio is encoded per [`super::audio::AudioFormat`] (default:
+//!   Opus @ 24 kbps in Ogg) and base64-embedded as a data URI.
+//!   DashScope also accepts uploaded file URLs, but inline is simpler
+//!   for sub-3-min utterances (our case — one hotkey-held phrase).
 
 use std::time::Duration;
 
@@ -48,6 +48,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+use super::audio::AudioFormat;
 use super::{AsrOutput, AsrProvider, AsrRequest};
 
 const MODEL: &str = "qwen3-asr-flash";
@@ -56,10 +57,16 @@ pub struct QwenAsr {
     client: Client,
     api_key: String,
     endpoint: String,
+    audio_format: AudioFormat,
 }
 
 impl QwenAsr {
-    pub fn new(endpoint: String, api_key: String, timeout: Duration) -> anyhow::Result<Self> {
+    pub fn new(
+        endpoint: String,
+        api_key: String,
+        timeout: Duration,
+        audio_format: AudioFormat,
+    ) -> anyhow::Result<Self> {
         let client = Client::builder()
             .timeout(timeout)
             .pool_idle_timeout(Duration::from_secs(90))
@@ -69,6 +76,7 @@ impl QwenAsr {
             client,
             api_key,
             endpoint,
+            audio_format,
         })
     }
 }
@@ -78,6 +86,8 @@ impl QwenAsr {
 #[derive(Deserialize)]
 struct DashScopeResponse {
     output: Option<DashScopeOutput>,
+    #[serde(default)]
+    usage: Option<DashScopeUsage>,
     /// Populated by DashScope on error (non-empty `code` means failure).
     #[serde(default)]
     code: Option<String>,
@@ -110,14 +120,121 @@ struct DashScopeAnnotation {
     language: Option<String>,
 }
 
+/// DashScope's `usage` block.
+///
+/// Field names differ between the DashScope sync endpoint (what we
+/// call) and the OpenAI-compatible endpoint. We accept any subset of
+/// both shapes:
+///
+/// * Sync API (`/multimodal-generation/generation`) — documented shape:
+///   ```json
+///   "usage": {
+///     "input_tokens_details": {"text_tokens": 0},
+///     "output_tokens_details": {"text_tokens": 6},
+///     "seconds": 1
+///   }
+///   ```
+///   `seconds` is the billing unit for Qwen3-ASR. The nested details
+///   expose text output length; `input_tokens_details.text_tokens` is
+///   documented as "无需关注" (ignore) but we surface it if present.
+///
+/// * OpenAI-compat API (`/chat/completions`) adds top-level
+///   `prompt_tokens` / `completion_tokens` / `total_tokens` alongside
+///   `seconds`, with `prompt_tokens_details.audio_tokens = 25 × seconds`.
+#[derive(Deserialize)]
+struct DashScopeUsage {
+    /// Audio duration in seconds — DashScope's billing unit.
+    #[serde(default)]
+    seconds: Option<u64>,
+
+    // OpenAI-compat top-level aggregates.
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
+
+    // Sync-API nested details.
+    #[serde(default)]
+    input_tokens_details: Option<DashScopeTokenDetails>,
+    #[serde(default)]
+    output_tokens_details: Option<DashScopeTokenDetails>,
+
+    // Legacy / observed variants — kept as fallbacks so we don't
+    // lose signal if DashScope renames fields.
+    #[serde(default)]
+    audio_seconds: Option<f64>,
+    #[serde(default)]
+    audio_duration: Option<f64>,
+    #[serde(default)]
+    duration: Option<f64>,
+    #[serde(default)]
+    input_tokens: Option<u64>,
+    #[serde(default)]
+    output_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct DashScopeTokenDetails {
+    #[serde(default)]
+    text_tokens: Option<u64>,
+    #[serde(default)]
+    audio_tokens: Option<u64>,
+}
+
+impl DashScopeUsage {
+    fn into_proto(self) -> airtalk_proto::AsrUsage {
+        // Billing unit: `seconds` (documented) → legacy float fallbacks.
+        let audio_seconds = self
+            .seconds
+            .map(|s| s as f64)
+            .or(self.audio_seconds)
+            .or(self.audio_duration)
+            .or(self.duration);
+
+        // Input tokens: prefer top-level aggregate (OpenAI-compat); else
+        // nested audio_tokens (also OpenAI-compat) or text_tokens.
+        let input_tokens = self.prompt_tokens.or(self.input_tokens).or_else(|| {
+            self.input_tokens_details
+                .as_ref()
+                .and_then(|d| d.audio_tokens.or(d.text_tokens))
+        });
+
+        // Output tokens: aggregate first; else nested text_tokens
+        // (sync API — actual transcription length).
+        let output_tokens = self.completion_tokens.or(self.output_tokens).or_else(|| {
+            self.output_tokens_details
+                .as_ref()
+                .and_then(|d| d.text_tokens)
+        });
+
+        airtalk_proto::AsrUsage {
+            audio_seconds,
+            input_tokens,
+            output_tokens,
+            total_tokens: self.total_tokens,
+        }
+    }
+}
+
 // ─── Provider impl ─────────────────────────────────────────────────────
 
 #[async_trait]
 impl AsrProvider for QwenAsr {
     async fn transcribe(&self, req: AsrRequest<'_>) -> anyhow::Result<AsrOutput> {
-        // Wrap PCM16 LE 16 kHz mono in a WAV container + base64 data URI.
-        let wav = pcm16_to_wav_16k_mono(req.pcm);
-        let audio_uri = format!("data:audio/wav;base64,{}", STANDARD.encode(&wav));
+        // Encode PCM16 LE 16 kHz mono per the configured format
+        // (WAV passthrough or Opus/Ogg). Wrap as a base64 data URI.
+        let encoded = self
+            .audio_format
+            .encode(req.pcm)
+            .context("encoding audio for ASR upload")?;
+        let upload_bytes = encoded.len() as u64;
+        let audio_uri = format!(
+            "data:{};base64,{}",
+            self.audio_format.mime(),
+            STANDARD.encode(&encoded),
+        );
 
         // Messages: optional system (context) + mandatory user (audio).
         let mut messages: Vec<Value> = Vec::with_capacity(2);
@@ -194,7 +311,14 @@ impl AsrProvider for QwenAsr {
             .and_then(|a| a.first())
             .and_then(|a| a.language.clone());
 
-        Ok(AsrOutput { text, language })
+        let usage = parsed.usage.map(DashScopeUsage::into_proto);
+
+        Ok(AsrOutput {
+            text,
+            language,
+            upload_bytes,
+            usage,
+        })
     }
 }
 
@@ -222,52 +346,6 @@ fn extract_text(content: &Value) -> Option<String> {
     None
 }
 
-/// Wrap PCM16 LE 16 kHz mono bytes in a 44-byte RIFF/WAVE header.
-///
-/// Layout:
-///
-/// ```text
-/// 0  "RIFF"              4 bytes
-/// 4  file_size - 8       u32 LE
-/// 8  "WAVE"              4 bytes
-/// 12 "fmt "              4 bytes
-/// 16 subchunk1_size = 16 u32 LE
-/// 20 audio_format   = 1  u16 LE   (PCM)
-/// 22 num_channels   = 1  u16 LE
-/// 24 sample_rate = 16000 u32 LE
-/// 28 byte_rate   = 32000 u32 LE
-/// 32 block_align     = 2 u16 LE
-/// 34 bits_per_sample= 16 u16 LE
-/// 36 "data"              4 bytes
-/// 40 data_size           u32 LE
-/// 44 PCM payload
-/// ```
-fn pcm16_to_wav_16k_mono(pcm: &[u8]) -> Vec<u8> {
-    const SAMPLE_RATE: u32 = 16_000;
-    const CHANNELS: u16 = 1;
-    const BITS_PER_SAMPLE: u16 = 16;
-    const BYTE_RATE: u32 = SAMPLE_RATE * (CHANNELS as u32) * (BITS_PER_SAMPLE as u32) / 8;
-    const BLOCK_ALIGN: u16 = CHANNELS * BITS_PER_SAMPLE / 8;
-
-    let data_size = pcm.len() as u32;
-    let mut out = Vec::with_capacity(44 + pcm.len());
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36u32.saturating_add(data_size)).to_le_bytes());
-    out.extend_from_slice(b"WAVE");
-    out.extend_from_slice(b"fmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes());
-    out.extend_from_slice(&CHANNELS.to_le_bytes());
-    out.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    out.extend_from_slice(&BYTE_RATE.to_le_bytes());
-    out.extend_from_slice(&BLOCK_ALIGN.to_le_bytes());
-    out.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&data_size.to_le_bytes());
-    out.extend_from_slice(pcm);
-    out
-}
-
 fn truncate(s: &str, max_chars: usize) -> String {
     let mut chars = s.chars();
     let head: String = chars.by_ref().take(max_chars).collect();
@@ -283,29 +361,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn wav_header_fields_are_correct() {
-        let pcm: Vec<u8> = vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07];
-        let wav = pcm16_to_wav_16k_mono(&pcm);
+    fn usage_parses_sync_api_shape() {
+        // Real DashScope `/multimodal-generation/generation` shape.
+        let raw = json!({
+            "input_tokens_details": {"text_tokens": 0},
+            "output_tokens_details": {"text_tokens": 6},
+            "seconds": 14
+        });
+        let parsed: DashScopeUsage = serde_json::from_value(raw).unwrap();
+        let proto = parsed.into_proto();
+        assert_eq!(proto.audio_seconds, Some(14.0));
+        assert_eq!(proto.output_tokens, Some(6));
+        assert_eq!(proto.total_tokens, None); // not in sync API
+    }
 
-        assert_eq!(wav.len(), 44 + pcm.len());
-        assert_eq!(&wav[0..4], b"RIFF");
-        assert_eq!(&wav[8..12], b"WAVE");
-        assert_eq!(&wav[12..16], b"fmt ");
-        assert_eq!(&wav[36..40], b"data");
-
-        let data_size = u32::from_le_bytes(wav[40..44].try_into().unwrap());
-        assert_eq!(data_size as usize, pcm.len());
-
-        let sr = u32::from_le_bytes(wav[24..28].try_into().unwrap());
-        assert_eq!(sr, 16_000);
-
-        let channels = u16::from_le_bytes(wav[22..24].try_into().unwrap());
-        assert_eq!(channels, 1);
-
-        let bits = u16::from_le_bytes(wav[34..36].try_into().unwrap());
-        assert_eq!(bits, 16);
-
-        assert_eq!(&wav[44..], &pcm[..]);
+    #[test]
+    fn usage_parses_openai_compat_shape() {
+        // Real `/chat/completions` shape for qwen3-asr-flash.
+        let raw = json!({
+            "completion_tokens": 12,
+            "completion_tokens_details": {"text_tokens": 12},
+            "prompt_tokens": 42,
+            "prompt_tokens_details": {"audio_tokens": 42, "text_tokens": 0},
+            "seconds": 1,
+            "total_tokens": 54
+        });
+        let parsed: DashScopeUsage = serde_json::from_value(raw).unwrap();
+        let proto = parsed.into_proto();
+        assert_eq!(proto.audio_seconds, Some(1.0));
+        assert_eq!(proto.input_tokens, Some(42));
+        assert_eq!(proto.output_tokens, Some(12));
+        assert_eq!(proto.total_tokens, Some(54));
     }
 
     #[test]

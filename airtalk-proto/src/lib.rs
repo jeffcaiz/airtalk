@@ -148,6 +148,10 @@ pub enum Response {
     ///                VAD-segmented, this is the first segment's
     ///                language — good enough as a UI hint, not a
     ///                per-segment tag.
+    /// * `stats`    — per-session counters + latencies + provider
+    ///                usage. Always populated; individual subfields
+    ///                may still be `None` (e.g. `llm_usage` when
+    ///                cleanup was skipped).
     Result {
         id: u64,
         text: String,
@@ -155,6 +159,7 @@ pub enum Response {
         raw: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         language: Option<String>,
+        stats: SessionStats,
     },
 
     /// Abnormal session termination.
@@ -163,6 +168,110 @@ pub enum Response {
     /// constants under [`error_code`] so callers can match without
     /// string literals spreading across the codebase.
     Error { id: u64, message: String },
+}
+
+// ─── Stats ─────────────────────────────────────────────────────────────
+
+/// Per-session counters, latencies, and provider-reported usage.
+///
+/// Emitted on every successful `Result`. Fields are split into three
+/// groups:
+///
+/// * **Self-computed timings/counters** — we measure these directly in
+///   the pipeline, so they're always populated.
+/// * **Provider-reported usage** — parsed from ASR/LLM responses. May
+///   be `None` if the provider didn't include a `usage` block in that
+///   particular call, or if the stage was skipped (`--no-llm`, etc.).
+/// * **Mode-dependent counters** — e.g. `vad_segments` is only
+///   meaningful when the session had `vad = true`.
+///
+/// Durations are in milliseconds. Byte counts reflect *encoded* (WAV
+/// or Ogg/Opus) payload post-`audio_format.encode()` — before base64 —
+/// so they match what actually crosses the wire to DashScope before
+/// base64's 33% overhead.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct SessionStats {
+    /// Total PCM audio received from the UI (before any VAD trimming).
+    pub pcm_received_ms: u32,
+
+    /// Total PCM audio actually forwarded to ASR. Equals
+    /// `pcm_received_ms` in non-VAD mode; less when VAD trimmed silence.
+    pub pcm_sent_to_asr_ms: u32,
+
+    /// Number of VAD segments produced. `None` when `vad = false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vad_segments: Option<u32>,
+
+    /// Number of ASR HTTP calls made (== `vad_segments` with VAD on,
+    /// 1 with VAD off).
+    pub asr_calls: u32,
+
+    /// Total encoded audio bytes uploaded across all ASR calls (pre-
+    /// base64). Useful for verifying actual compression ratios when
+    /// testing different `--asr-audio-format` settings.
+    pub asr_upload_bytes: u64,
+
+    /// Slowest single ASR call's wall-clock time. With concurrent VAD
+    /// segments each call is timed individually; this is the max
+    /// across them (the bottleneck call). Not the sum, and not the
+    /// "End → ASR done" wait — the latter is misleading because
+    /// segments spawned during audio reception may already be finished
+    /// by the time End arrives.
+    pub asr_latency_ms: u32,
+
+    /// Wall-clock time spent on LLM cleanup. `None` when `--no-llm` or
+    /// per-session `enable_llm = false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_latency_ms: Option<u32>,
+
+    /// Wall-clock time from `End` arriving at the actor to the terminal
+    /// `Result` being emitted on stdout.
+    pub total_latency_ms: u32,
+
+    /// ASR provider-reported usage (summed across segments). `None`
+    /// when the provider didn't include a usage block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asr_usage: Option<AsrUsage>,
+
+    /// LLM provider-reported usage. `None` when cleanup was skipped or
+    /// the provider didn't include a usage block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llm_usage: Option<LlmUsage>,
+}
+
+/// Qwen3-ASR usage. DashScope reports audio duration in seconds plus
+/// token-equivalent counts for billing; we surface what we see.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct AsrUsage {
+    /// Audio duration as reported by DashScope, in seconds. May differ
+    /// from our `pcm_sent_to_asr_ms` (different rounding, or padding
+    /// on the provider side).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_seconds: Option<f64>,
+
+    /// Token count reported by the provider (some DashScope responses
+    /// include this alongside audio seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+}
+
+/// OpenAI-compatible chat completion usage.
+#[derive(Serialize, Deserialize, Debug, Clone, Default, PartialEq)]
+pub struct LlmUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion_tokens: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
 }
 
 // ─── PCM base64 codec (wire: base64 String ↔ Rust: Vec<u8>) ────────────
@@ -484,11 +593,33 @@ mod tests {
 
     #[test]
     fn roundtrip_result_unicode_with_raw_and_lang() {
+        let stats = SessionStats {
+            pcm_received_ms: 3_200,
+            pcm_sent_to_asr_ms: 2_800,
+            vad_segments: Some(2),
+            asr_calls: 2,
+            asr_upload_bytes: 12_345,
+            asr_latency_ms: 420,
+            llm_latency_ms: Some(180),
+            total_latency_ms: 610,
+            asr_usage: Some(AsrUsage {
+                audio_seconds: Some(2.8),
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: Some(140),
+            }),
+            llm_usage: Some(LlmUsage {
+                prompt_tokens: Some(42),
+                completion_tokens: Some(8),
+                total_tokens: Some(50),
+            }),
+        };
         let msg = Response::Result {
             id: 7,
             text: "你好，世界。🌏".to_string(),
             raw: Some("你好世界".to_string()),
             language: Some("zh".to_string()),
+            stats: stats.clone(),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &msg).unwrap();
@@ -501,11 +632,13 @@ mod tests {
                 text,
                 raw,
                 language,
+                stats: got_stats,
             } => {
                 assert_eq!(id, 7);
                 assert_eq!(text, "你好，世界。🌏");
                 assert_eq!(raw.as_deref(), Some("你好世界"));
                 assert_eq!(language.as_deref(), Some("zh"));
+                assert_eq!(got_stats, stats);
             }
             _ => panic!("wrong variant"),
         }
@@ -573,6 +706,7 @@ mod tests {
             text: "line1\nline2\nline3".into(),
             raw: None,
             language: None,
+            stats: SessionStats::default(),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &msg).unwrap();

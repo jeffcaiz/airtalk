@@ -253,9 +253,85 @@ def _print_result(
                 print("raw:      (same as text)")
         if lang:
             print(f"language: {lang}")
+        _print_stats(resp.get("stats"))
     print(
         f"rec: {rec_s:5.2f}s   "
         f"wait: {wait_ms:5.0f}ms (end→result)   "
         f"total: {total_ms:5.0f}ms"
     )
     print(sep)
+
+
+def _print_stats(stats: Optional[dict]) -> None:
+    """Compact stats block. Three lines max; sections skipped when
+    their data isn't present (VAD off, LLM disabled, provider omitted
+    `usage`)."""
+    if not stats:
+        return
+
+    # ── Audio / VAD line ──
+    audio_bits: list[str] = []
+    segs = stats.get("vad_segments")
+    if isinstance(segs, int):
+        audio_bits.append(f"{segs} segs")
+    recv_ms = stats.get("pcm_received_ms")
+    sent_ms = stats.get("pcm_sent_to_asr_ms")
+    if isinstance(recv_ms, int) and isinstance(sent_ms, int):
+        if sent_ms != recv_ms:
+            audio_bits.append(f"{sent_ms}ms spoken / {recv_ms}ms total")
+        else:
+            audio_bits.append(f"{recv_ms}ms audio")
+    if audio_bits:
+        print(f"audio:    {' · '.join(audio_bits)}")
+
+    # ── ASR line ──
+    asr_bits: list[str] = []
+    calls = stats.get("asr_calls")
+    if isinstance(calls, int):
+        asr_bits.append(f"{calls} call{'s' if calls != 1 else ''}")
+    upload = stats.get("asr_upload_bytes")
+    if isinstance(upload, int):
+        asr_bits.append(_fmt_bytes(upload) + " up")
+    asr_latency = stats.get("asr_latency_ms")
+    if isinstance(asr_latency, int):
+        asr_bits.append(f"{asr_latency}ms")
+    asr_usage = stats.get("asr_usage") or {}
+    usage_parts: list[str] = []
+    # DashScope bills Qwen3-ASR by audio seconds — lead with that.
+    audio_s = asr_usage.get("audio_seconds")
+    if isinstance(audio_s, (int, float)):
+        usage_parts.append(f"{audio_s:.0f}s billed")
+    # Token info, if present (OpenAI-compat endpoint surfaces totals).
+    tot = asr_usage.get("total_tokens")
+    out_tok = asr_usage.get("output_tokens")
+    if isinstance(tot, int):
+        usage_parts.append(f"{tot} tok")
+    elif isinstance(out_tok, int):
+        usage_parts.append(f"{out_tok} out-tok")
+    if usage_parts:
+        asr_bits.append("usage " + " / ".join(usage_parts))
+    if asr_bits:
+        print(f"asr:      {' · '.join(asr_bits)}")
+
+    # ── LLM line ──
+    llm_bits: list[str] = []
+    llm_latency = stats.get("llm_latency_ms")
+    if isinstance(llm_latency, int):
+        llm_bits.append(f"{llm_latency}ms")
+    llm_usage = stats.get("llm_usage") or {}
+    pt = llm_usage.get("prompt_tokens")
+    ct = llm_usage.get("completion_tokens")
+    if isinstance(pt, int) or isinstance(ct, int):
+        pt_s = pt if isinstance(pt, int) else "?"
+        ct_s = ct if isinstance(ct, int) else "?"
+        llm_bits.append(f"usage {pt_s}p+{ct_s}c")
+    if llm_bits:
+        print(f"llm:      {' · '.join(llm_bits)}")
+
+
+def _fmt_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n}B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.1f}KB"
+    return f"{n / (1024 * 1024):.2f}MB"

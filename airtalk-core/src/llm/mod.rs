@@ -1,13 +1,21 @@
 //! LLM provider trait and OpenAI-compatible implementation.
 
+use airtalk_proto::LlmUsage;
 use async_trait::async_trait;
 
 pub mod openai;
 
+/// Per-call LLM response: cleaned text plus (when available) the
+/// provider's token usage block.
+pub struct LlmOutput {
+    pub text: String,
+    pub usage: Option<LlmUsage>,
+}
+
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
     /// Clean up the raw ASR text using the given system prompt.
-    async fn cleanup(&self, text: &str, system_prompt: &str) -> anyhow::Result<String>;
+    async fn cleanup(&self, text: &str, system_prompt: &str) -> anyhow::Result<LlmOutput>;
 }
 
 /// No-op provider used when core is started with `--no-llm`.
@@ -21,7 +29,7 @@ pub struct DisabledLlm;
 
 #[async_trait]
 impl LlmProvider for DisabledLlm {
-    async fn cleanup(&self, _text: &str, _system_prompt: &str) -> anyhow::Result<String> {
+    async fn cleanup(&self, _text: &str, _system_prompt: &str) -> anyhow::Result<LlmOutput> {
         anyhow::bail!("LLM is disabled (--no-llm); cleanup() should never be called")
     }
 }

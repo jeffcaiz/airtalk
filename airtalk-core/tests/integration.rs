@@ -159,6 +159,11 @@ async fn mock_asr_ok(text: &str, lang: &str) -> MockServer {
                         }
                     }]
                 },
+                "usage": {
+                    "input_tokens_details": {"text_tokens": 0},
+                    "output_tokens_details": {"text_tokens": 3},
+                    "seconds": 1
+                },
                 "request_id": "mock"
             })),
         )
@@ -175,7 +180,12 @@ async fn mock_llm_ok(content: &str) -> MockServer {
             ResponseTemplate::new(200).set_body_json(json!({
                 "choices": [{
                     "message": {"content": content}
-                }]
+                }],
+                "usage": {
+                    "prompt_tokens": 30,
+                    "completion_tokens": 10,
+                    "total_tokens": 40
+                }
             })),
         )
         .mount(&server)
@@ -264,11 +274,30 @@ async fn happy_path_vad_false_with_mocks() {
             text,
             raw,
             language,
+            stats,
         } => {
             assert_eq!(id, 1);
             assert_eq!(text, "Hello, world.");
             assert_eq!(raw.as_deref(), Some("hello world"));
             assert_eq!(language.as_deref(), Some("en"));
+            // 16 KB PCM = 500 ms at 16 kHz/16-bit. vad=false in this
+            // test, so vad_segments should be None, asr_calls = 1.
+            assert_eq!(stats.pcm_received_ms, 500);
+            assert_eq!(stats.pcm_sent_to_asr_ms, 500);
+            assert_eq!(stats.vad_segments, None);
+            assert_eq!(stats.asr_calls, 1);
+            assert!(stats.asr_upload_bytes > 0);
+            // ASR + LLM usage should be forwarded from the mocks.
+            // DashScope sync-API shape: `seconds` + nested *_details.
+            // `total_tokens` is NOT present in sync mode.
+            let asr_usage = stats.asr_usage.as_ref().expect("asr_usage");
+            assert_eq!(asr_usage.audio_seconds, Some(1.0));
+            assert_eq!(asr_usage.output_tokens, Some(3));
+            assert_eq!(asr_usage.total_tokens, None);
+            let llm_usage = stats.llm_usage.as_ref().expect("llm_usage");
+            assert_eq!(llm_usage.prompt_tokens, Some(30));
+            assert_eq!(llm_usage.completion_tokens, Some(10));
+            assert!(stats.llm_latency_ms.is_some());
         }
         other => panic!("expected Result, got {other:?}"),
     }
@@ -295,7 +324,11 @@ async fn supersede_emits_error_then_new_result() {
     core.send(&Request::End { id: 2 }).await;
 
     match core.recv().await {
-        Response::Result { id, .. } => assert_eq!(id, 2),
+        Response::Result { id, stats, .. } => {
+            assert_eq!(id, 2);
+            // Sanity: the fresh pipeline still populated stats.
+            assert_eq!(stats.asr_calls, 1);
+        }
         other => panic!("expected Result for id=2, got {other:?}"),
     }
     core.expect_clean_exit().await;
@@ -362,6 +395,8 @@ async fn graceful_shutdown_delivers_inflight_result() {
 
     match core.recv().await {
         Response::Result { id, .. } => assert_eq!(id, 1),
+        // (graceful shutdown path: we're more interested in *whether*
+        // we get a Result than in its stats, so no stat assertions here.)
         other => panic!("expected Result after graceful shutdown, got {other:?}"),
     }
 

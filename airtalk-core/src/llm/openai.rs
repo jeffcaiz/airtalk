@@ -35,7 +35,9 @@ use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use super::LlmProvider;
+use airtalk_proto::LlmUsage;
+
+use super::{LlmOutput, LlmProvider};
 
 pub struct OpenAiConfig {
     pub base_url: String,
@@ -62,12 +64,14 @@ impl OpenAiLlm {
 }
 
 // ─── Response shape ────────────────────────────────────────────────────
-// Only the fields we actually use. Unknown fields (usage, finish_reason,
-// etc.) are ignored by serde.
+// Only the fields we actually use. Unknown fields (finish_reason,
+// system_fingerprint, etc.) are ignored by serde.
 
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,
+    #[serde(default)]
+    usage: Option<ChatUsage>,
 }
 
 #[derive(Deserialize)]
@@ -80,9 +84,29 @@ struct ChoiceMessage {
     content: String,
 }
 
+#[derive(Deserialize)]
+struct ChatUsage {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    total_tokens: Option<u64>,
+}
+
+impl ChatUsage {
+    fn into_proto(self) -> LlmUsage {
+        LlmUsage {
+            prompt_tokens: self.prompt_tokens,
+            completion_tokens: self.completion_tokens,
+            total_tokens: self.total_tokens,
+        }
+    }
+}
+
 #[async_trait]
 impl LlmProvider for OpenAiLlm {
-    async fn cleanup(&self, text: &str, system_prompt: &str) -> anyhow::Result<String> {
+    async fn cleanup(&self, text: &str, system_prompt: &str) -> anyhow::Result<LlmOutput> {
         let url = format!(
             "{}/chat/completions",
             self.config.base_url.trim_end_matches('/')
@@ -128,6 +152,7 @@ impl LlmProvider for OpenAiLlm {
         let parsed: ChatResponse = serde_json::from_str(&body_text).with_context(|| {
             format!("parsing LLM response: {}", truncate(&body_text, 500))
         })?;
+        let usage = parsed.usage.map(ChatUsage::into_proto);
         let cleaned = parsed
             .choices
             .into_iter()
@@ -140,7 +165,10 @@ impl LlmProvider for OpenAiLlm {
         if cleaned.is_empty() {
             anyhow::bail!("LLM returned empty content");
         }
-        Ok(cleaned)
+        Ok(LlmOutput {
+            text: cleaned,
+            usage,
+        })
     }
 }
 
