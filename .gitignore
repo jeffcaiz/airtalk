@@ -18,6 +18,17 @@ Cargo.lock.bak
 # Per-run outputs from testkit (generated WAVs etc.)
 tools/testkit/outputs/
 
+# iconlab: generated ICO/previews + auto-downloaded SIL OFL fonts.
+# The final airtalk.ico + tray_icon.rgba live under airtalk/assets/
+# (checked in); fonts re-download on first run, no need to vendor.
+tools/iconlab/out/
+tools/iconlab/fonts/
+
+# soundlab: audition WAVs — the chosen style's parameters get baked
+# into airtalk/src/feedback.rs at port time, the WAVs themselves
+# aren't source.
+tools/soundlab/out/
+
 # ─── IDE / editor ──────────────────────────────────────────────────
 /.idea
 /.vscode

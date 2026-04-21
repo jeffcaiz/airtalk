@@ -1,0 +1,18 @@
+[project]
+name = "airtalk-iconlab"
+version = "0.1.0"
+description = "Render 空 glyph into airtalk.ico + tray RGBA"
+requires-python = ">=3.10"
+dependencies = [
+    "pillow>=10.0",
+]
+
+[project.scripts]
+iconlab = "iconlab.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["iconlab"]
