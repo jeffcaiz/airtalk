@@ -9,6 +9,12 @@ description = "Native Windows UI for airtalk"
 name = "airtalk"
 path = "src/main.rs"
 
+[build-dependencies]
+# Embed icon + VersionInfo into airtalk.exe so it shows properly in
+# Alt+Tab, taskbar, and Explorer. Windows-only; `build.rs` no-ops on
+# other targets.
+winres = "0.1"
+
 [dependencies]
 airtalk-proto = { workspace = true, features = ["tokio"] }
 tokio = { workspace = true }
@@ -51,4 +57,5 @@ features = [
     "Win32_System_Console",
     "Win32_Graphics_Dwm",
     "Win32_Security_Credentials",
+    "Win32_System_Registry",
 ]

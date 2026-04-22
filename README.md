@@ -11,11 +11,33 @@ Two processes, connected by stdio:
 See [`DESIGN.md`](./DESIGN.md) for architecture, protocol, and
 implementation notes.
 
+## Install
+
+Download the latest installer from the
+[Releases page](https://github.com/jeffcaiz/airtalk/releases):
+
+- **`airtalk-vX.Y.Z-x86_64-windows-setup.exe`** — standard installer.
+  Optional "Launch at Startup" task is checked by default; creates
+  Start Menu entries; uninstaller leaves `%APPDATA%\airtalk\` and saved
+  API keys (Credential Manager) in place so a reinstall picks up where
+  you left off.
+- **`airtalk-vX.Y.Z-x86_64-pc-windows-msvc.zip`** — portable build if you
+  prefer no installer. Extract anywhere and run `airtalk.exe`.
+
+Both builds are **not code-signed** (no certificate yet). Windows
+SmartScreen will show "Windows protected your PC" on first launch —
+click **More info → Run anyway**. The warning goes away after Windows
+learns the binary.
+
+On first launch airtalk opens Settings and asks for your DashScope API
+key. Get one at [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/).
+
 ## Status
 
 Core is complete and verified end-to-end against a real DashScope
-account (Qwen3-ASR + qwen-flash LLM cleanup). UI process not yet
-started. See DESIGN.md §Implementation status for the component
+account (Qwen3-ASR + qwen-flash LLM cleanup). Windows UI ships with
+tray, global hotkey, overlay, paste, Settings window, and "Launch at
+Startup". See DESIGN.md §Implementation status for the component
 breakdown.
 
 ## Layout
@@ -23,7 +45,8 @@ breakdown.
 ```
 airtalk-proto/   shared wire types (Request / Response + framing helpers)
 airtalk-core/    background computation process
-airtalk/         native UI process (stub)
+airtalk/         native UI process (tray, hotkey, overlay, Settings)
+installer/       Inno Setup script for Windows installer
 ```
 
 ## Build

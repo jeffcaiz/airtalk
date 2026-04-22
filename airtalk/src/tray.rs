@@ -60,6 +60,7 @@ const WM_TRAY_CALLBACK: u32 = WM_APP + 1;
 
 const MENU_ID_SETTINGS: u32 = 1001;
 const MENU_ID_QUIT: u32 = 1002;
+const MENU_ID_AUTOSTART: u32 = 1003;
 /// "Auto" mic item. Device items use MENU_ID_MIC_BASE + index.
 const MENU_ID_MIC_AUTO: u32 = 2000;
 const MENU_ID_MIC_BASE: u32 = 2001;
@@ -74,6 +75,9 @@ pub enum TrayEvent {
     /// User selected a microphone from the submenu. `DeviceChoice::Auto`
     /// follows the system default; `Named(_)` pins a specific device.
     SelectMicrophone(DeviceChoice),
+    /// User toggled "Launch at Startup". Payload is the requested new
+    /// state (opposite of what the registry held when the menu opened).
+    SetAutostart(bool),
 }
 
 pub struct Tray {
@@ -341,6 +345,12 @@ fn handle_menu_command(id: u32) {
     match id {
         MENU_ID_SETTINGS => emit(TrayEvent::OpenSettings),
         MENU_ID_QUIT => emit(TrayEvent::Quit),
+        MENU_ID_AUTOSTART => {
+            // Snapshot state at click time — whatever the registry says
+            // now is the current value; we flip it.
+            let next = !crate::autostart::is_enabled();
+            emit(TrayEvent::SetAutostart(next));
+        }
         MENU_ID_MIC_AUTO => emit(TrayEvent::SelectMicrophone(DeviceChoice::Auto)),
         id if (MENU_ID_MIC_BASE..=MENU_ID_MIC_MAX).contains(&id) => {
             let idx = (id - MENU_ID_MIC_BASE) as usize;
@@ -373,6 +383,14 @@ unsafe fn show_context_menu(hwnd: HWND) {
         let label: Vec<u16> = "Microphone\0".encode_utf16().collect();
         let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, PCWSTR(label.as_ptr()));
     }
+
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    append_checkable(
+        menu,
+        MENU_ID_AUTOSTART,
+        "Launch at Startup",
+        crate::autostart::is_enabled(),
+    );
 
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     append_item(menu, MENU_ID_QUIT, "Quit airtalk");

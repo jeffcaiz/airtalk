@@ -27,6 +27,8 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod audio;
+#[cfg(windows)]
+mod autostart;
 mod core_client;
 mod hotkey;
 mod overlay;
@@ -60,6 +62,20 @@ struct Args {
     debug: bool,
 }
 
+fn print_help() {
+    println!("airtalk {} — voice input for Windows", env!("CARGO_PKG_VERSION"));
+    println!();
+    println!("Usage: airtalk [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  --debug         Log at debug level, force a foreground console");
+    println!("  --smoke-test    Spawn core, verify Ready handshake, exit");
+    println!("  --dev-mic       Timed mic roundtrip (developer)");
+    println!("  --seconds N     Duration for --dev-mic (default 3)");
+    println!("  -V, --version   Print version and exit");
+    println!("  -h, --help      Show this help");
+}
+
 fn parse_args() -> Args {
     let raw: Vec<String> = std::env::args().collect();
     let smoke_test = raw.iter().any(|a| a == "--smoke-test");
@@ -81,6 +97,19 @@ fn parse_args() -> Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // 0. `--version` / `-V` / `--help` / `-h` print and exit. Handled
+    //    before anything else so users running from a console don't
+    //    get tangled up in single-instance or logging init.
+    let raw: Vec<String> = std::env::args().collect();
+    if raw.iter().any(|a| a == "--version" || a == "-V") {
+        println!("airtalk {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if raw.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return Ok(());
+    }
+
     // 1. Opt into Per-Monitor DPI Aware v2 before any window is created.
     //    Without this the tray menu font looks bitmap-stretched on HiDPI
     //    and our overlay renders at ~half size on 200 %-scaled displays.
@@ -368,6 +397,13 @@ async fn run_hotkey_loop() -> Result<()> {
                         }
                         current_mic = choice.clone();
                         tray.set_current_mic(choice);
+                    }
+                    Some(TrayEvent::SetAutostart(enabled)) => {
+                        log::info!("tray: autostart → {enabled}");
+                        #[cfg(windows)]
+                        if let Err(e) = autostart::set(enabled) {
+                            log::warn!("autostart toggle failed: {e:#}");
+                        }
                     }
                     None => anyhow::bail!("tray channel closed"),
                 }

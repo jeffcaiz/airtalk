@@ -133,6 +133,7 @@ component StatusBadge inherits Rectangle {
 }
 
 export component SettingsWindow inherits Window {
+    in-out property <bool> autostart-enabled;
     in-out property <string> asr-lang;
     in-out property <string> asr-key-input;
     in-out property <string> asr-hotwords;
@@ -190,6 +191,29 @@ export component SettingsWindow inherits Window {
             VerticalLayout {
                 padding-right: 4px;
                 spacing: 14px;
+
+                // ─── Startup ─────────────────────────────────────────
+                Card {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            VerticalLayout {
+                                spacing: 2px;
+                                SectionTitle { text: "Startup"; }
+                                SectionHint {
+                                    text: "Start airtalk automatically when you sign in to Windows.";
+                                }
+                            }
+                            CheckBox {
+                                text: "Launch at Startup";
+                                checked <=> root.autostart-enabled;
+                            }
+                        }
+                    }
+                }
 
                 // ─── Audio ───────────────────────────────────────────
                 Card {
@@ -473,6 +497,7 @@ pub struct SettingsSnapshot {
     pub config: AppConfig,
     pub asr_key_saved: bool,
     pub llm_key_saved: bool,
+    pub autostart_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -482,6 +507,7 @@ pub struct SaveRequest {
     pub clear_asr_key: bool,
     pub new_llm_key: Option<String>,
     pub clear_llm_key: bool,
+    pub autostart_enabled: bool,
 }
 
 #[derive(Debug)]
@@ -566,6 +592,7 @@ pub fn load_snapshot() -> Result<SettingsSnapshot> {
         config: load_config()?,
         asr_key_saved: load_secret(ASR_CRED_TARGET)?.is_some(),
         llm_key_saved: load_secret(LLM_CRED_TARGET)?.is_some(),
+        autostart_enabled: crate::autostart::is_enabled(),
     })
 }
 
@@ -601,6 +628,8 @@ pub fn save_request(req: SaveRequest) -> Result<()> {
     if let Some(value) = req.new_llm_key.as_deref() {
         store_secret(LLM_CRED_TARGET, value)?;
     }
+
+    crate::autostart::set(req.autostart_enabled)?;
 
     Ok(())
 }
@@ -813,6 +842,7 @@ fn run_settings_window() -> Result<Option<SaveRequest>> {
     let (options, selected) = device_options(&snapshot.config);
     window.set_device_model(ModelRc::new(VecModel::from(options)));
     window.set_device_index(selected);
+    window.set_autostart_enabled(snapshot.autostart_enabled);
     window.set_asr_lang(snapshot.config.asr.lang.clone().into());
     window.set_asr_hotwords(snapshot.config.asr.hotwords_content.clone().into());
     window.set_llm_enabled(snapshot.config.llm.enabled);
@@ -895,6 +925,7 @@ fn run_settings_window() -> Result<Option<SaveRequest>> {
         clear_asr_key: window.get_asr_key_pending_clear(),
         new_llm_key,
         clear_llm_key: window.get_llm_key_pending_clear(),
+        autostart_enabled: window.get_autostart_enabled(),
     }))
 }
 

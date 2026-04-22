@@ -6,7 +6,7 @@ members = ["airtalk-proto", "airtalk-core", "airtalk"]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = ""
+repository = "https://github.com/jeffcaiz/airtalk"
 
 [workspace.dependencies]
 airtalk-proto = { path = "airtalk-proto" }
