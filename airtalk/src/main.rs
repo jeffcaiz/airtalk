@@ -302,7 +302,7 @@ fn show_msgbox(msg: &str, is_error: bool) {
         let _ = MessageBoxW(
             None,
             PCWSTR(wide.as_ptr()),
-            w!("AirTalk · 空·谈"),
+            w!("AirTalk - 空·谈"),
             MB_OK | icon | MB_SETFOREGROUND,
         );
     }

@@ -158,7 +158,7 @@ fn run_tray_thread(init_tx: &mpsc::Sender<Result<()>>) -> Result<()> {
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAY_CALLBACK;
         nid.hIcon = icon;
-        let tip: Vec<u16> = "AirTalk · 空·谈\0".encode_utf16().collect();
+        let tip: Vec<u16> = "AirTalk - 空·谈\0".encode_utf16().collect();
         let max = nid.szTip.len().min(tip.len());
         nid.szTip[..max].copy_from_slice(&tip[..max]);
 

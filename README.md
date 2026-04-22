@@ -1,4 +1,4 @@
-# AirTalk · 空·谈
+# AirTalk - 空·谈
 
 Windows voice input tool. Hold a hotkey, speak, release — your cleaned-up
 text is pasted into the focused app.
