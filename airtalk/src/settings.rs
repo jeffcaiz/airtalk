@@ -15,6 +15,7 @@ use windows::Win32::Security::Credentials::{
 
 use crate::audio::{self, DeviceChoice};
 use crate::core_client::SpawnConfig;
+use crate::hotkey;
 use crate::paths;
 use crate::slint_ui::SettingsWindow;
 
@@ -38,6 +39,11 @@ pub struct AppConfig {
     pub asr: AsrConfig,
     pub llm: LlmConfig,
     pub audio: AudioConfig,
+    // serde(default) keeps old config.toml files (written before the
+    // hotkey section existed) parsing cleanly — missing section falls
+    // back to Right Alt + Combo.
+    #[serde(default)]
+    pub hotkey: HotkeyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,6 +73,98 @@ pub struct AudioConfig {
     pub input_device: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyConfig {
+    // Stored as strings (see `TRIGGERS` / `MODES` tables below) rather
+    // than enum variants so the TOML stays human-readable and robust
+    // to enum reordering.
+    #[serde(default = "default_hotkey_trigger")]
+    pub trigger: String,
+    #[serde(default = "default_hotkey_mode")]
+    pub mode: String,
+}
+
+fn default_hotkey_trigger() -> String {
+    "right_alt".into()
+}
+
+fn default_hotkey_mode() -> String {
+    "combo".into()
+}
+
+impl Default for HotkeyConfig {
+    fn default() -> Self {
+        Self {
+            trigger: default_hotkey_trigger(),
+            mode: default_hotkey_mode(),
+        }
+    }
+}
+
+// Maps between the persisted strings, the UI ComboBox index, and the
+// `hotkey::Trigger` / `hotkey::Mode` enum. The order of these tables
+// is the order shown in the ComboBox — must stay in sync with the
+// hardcoded `model:` lists in slint_ui.rs.
+const TRIGGERS: &[(&str, hotkey::Trigger)] = &[
+    ("right_alt", hotkey::Trigger::RightAlt),
+    ("left_alt", hotkey::Trigger::LeftAlt),
+    ("right_ctrl", hotkey::Trigger::RightCtrl),
+    ("left_ctrl", hotkey::Trigger::LeftCtrl),
+    ("right_shift", hotkey::Trigger::RightShift),
+    ("left_shift", hotkey::Trigger::LeftShift),
+    ("right_win", hotkey::Trigger::RightWin),
+    ("left_win", hotkey::Trigger::LeftWin),
+    ("caps_lock", hotkey::Trigger::CapsLock),
+];
+
+const MODES: &[(&str, hotkey::Mode)] = &[
+    ("combo", hotkey::Mode::Combo),
+    ("hold", hotkey::Mode::Hold),
+    ("tap", hotkey::Mode::Tap),
+];
+
+pub fn hotkey_config_from_config(config: &AppConfig) -> hotkey::Config {
+    let trigger = TRIGGERS
+        .iter()
+        .find_map(|(k, t)| (*k == config.hotkey.trigger).then_some(*t))
+        .unwrap_or(hotkey::Trigger::RightAlt);
+    let mode = MODES
+        .iter()
+        .find_map(|(k, m)| (*k == config.hotkey.mode).then_some(*m))
+        .unwrap_or(hotkey::Mode::Combo);
+    hotkey::Config { trigger, mode }
+}
+
+fn trigger_to_index(key: &str) -> i32 {
+    TRIGGERS
+        .iter()
+        .position(|(k, _)| *k == key)
+        .map(|i| i as i32)
+        .unwrap_or(0)
+}
+
+fn mode_to_index(key: &str) -> i32 {
+    MODES
+        .iter()
+        .position(|(k, _)| *k == key)
+        .map(|i| i as i32)
+        .unwrap_or(0)
+}
+
+fn trigger_from_index(idx: i32) -> String {
+    TRIGGERS
+        .get(idx.max(0) as usize)
+        .map(|(k, _)| (*k).to_string())
+        .unwrap_or_else(default_hotkey_trigger)
+}
+
+fn mode_from_index(idx: i32) -> String {
+    MODES
+        .get(idx.max(0) as usize)
+        .map(|(k, _)| (*k).to_string())
+        .unwrap_or_else(default_hotkey_mode)
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -83,6 +181,7 @@ impl Default for AppConfig {
             audio: AudioConfig {
                 input_device: "auto".into(),
             },
+            hotkey: HotkeyConfig::default(),
         }
     }
 }
@@ -308,6 +407,15 @@ fn normalize_config(config: &mut AppConfig) {
     config.llm.base_url = trimmed_or_default(&config.llm.base_url, MAINLAND_LLM_URL);
     config.llm.model = trimmed_or_default(&config.llm.model, "qwen-flash");
     config.audio.input_device = trimmed_or_default(&config.audio.input_device, "auto");
+    // Reject unknown keys — fall back to defaults so a hand-edited
+    // config.toml with a typo doesn't leave the user stuck with an
+    // unresponsive hotkey.
+    if !TRIGGERS.iter().any(|(k, _)| *k == config.hotkey.trigger) {
+        config.hotkey.trigger = default_hotkey_trigger();
+    }
+    if !MODES.iter().any(|(k, _)| *k == config.hotkey.mode) {
+        config.hotkey.mode = default_hotkey_mode();
+    }
 }
 
 fn trimmed_or_default(value: &str, default: &str) -> String {
@@ -391,6 +499,8 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
     window.set_asr_key_pending_clear(false);
     window.set_llm_key_saved(snapshot.llm_key_saved);
     window.set_llm_key_pending_clear(false);
+    window.set_hotkey_trigger_index(trigger_to_index(&snapshot.config.hotkey.trigger));
+    window.set_hotkey_mode_index(mode_to_index(&snapshot.config.hotkey.mode));
     window.set_status_text("".into());
 
     let save_flag = Arc::new(AtomicBool::new(false));
@@ -439,6 +549,10 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
         },
         audio: AudioConfig {
             input_device: selected_device(window.get_device_index(), &snapshot.config),
+        },
+        hotkey: HotkeyConfig {
+            trigger: trigger_from_index(window.get_hotkey_trigger_index()),
+            mode: mode_from_index(window.get_hotkey_mode_index()),
         },
     };
 

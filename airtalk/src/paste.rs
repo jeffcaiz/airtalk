@@ -47,7 +47,7 @@ pub enum Strategy {
     Clipboard,
     /// Type characters directly with `KEYEVENTF_UNICODE`. Use for apps
     /// that block `Ctrl+V` (UWP, some elevated processes).
-    #[allow(dead_code)] // exposed through settings once that module lands
+    #[allow(dead_code)] // surfaced once the settings UI lands
     SendInput,
 }
 

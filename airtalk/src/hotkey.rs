@@ -19,7 +19,7 @@
 
 #![cfg(windows)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -29,9 +29,7 @@ use tokio::sync::mpsc;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_CAPITAL, VK_F1, VK_F10, VK_F11, VK_F12, VK_F13, VK_F14, VK_F15, VK_F16, VK_F17, VK_F18,
-    VK_F19, VK_F2, VK_F20, VK_F21, VK_F22, VK_F23, VK_F24, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7,
-    VK_F8, VK_F9, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
+    VK_CAPITAL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
     VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -59,7 +57,6 @@ pub enum HotkeyEvent {
 ///   how long you held.
 /// * **Tap** — strict toggle. Each tap flips between recording / idle.
 ///   Release is a no-op.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
     Combo,
@@ -67,14 +64,35 @@ pub enum Mode {
     Tap,
 }
 
+const MODE_COMBO: u8 = 0;
+const MODE_HOLD: u8 = 1;
+const MODE_TAP: u8 = 2;
+
+fn encode_mode(m: Mode) -> u8 {
+    match m {
+        Mode::Combo => MODE_COMBO,
+        Mode::Hold => MODE_HOLD,
+        Mode::Tap => MODE_TAP,
+    }
+}
+
+fn decode_mode(n: u8) -> Mode {
+    match n {
+        MODE_HOLD => Mode::Hold,
+        MODE_TAP => Mode::Tap,
+        _ => Mode::Combo,
+    }
+}
+
 /// Threshold (ms) below which a key-up in [`Mode::Combo`] is treated as
 /// a short tap (keep recording, wait for next tap to stop) rather than
 /// a push-to-talk release.
 pub const COMBO_HOLD_MS: u128 = 300;
 
-// Only RightAlt is wired into Config::default() so far; the rest sit on
-// the trigger_vk table ready for settings UI to surface them later.
-#[allow(dead_code)]
+/// Keys we permit as hotkeys. Restricted to modifier-type keys because
+/// the low-level hook swallows the trigger — a bare character key would
+/// be unusable for normal typing afterwards. F1–F24 were considered but
+/// left out for ergonomics (not convenient to press one-handed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     RightAlt,
@@ -86,9 +104,6 @@ pub enum Trigger {
     RightWin,
     LeftWin,
     CapsLock,
-    /// Function keys F1..=F24. Values outside that range are rejected
-    /// at `start` time.
-    F(u8),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,9 +121,7 @@ impl Default for Config {
     }
 }
 
-/// Convert a [`Trigger`] to its VK code. Returns `None` for
-/// out-of-range `F(n)`.
-fn trigger_vk(t: Trigger) -> Option<u32> {
+fn trigger_vk(t: Trigger) -> u32 {
     let vk = match t {
         Trigger::RightAlt => VK_RMENU.0,
         Trigger::LeftAlt => VK_LMENU.0,
@@ -119,35 +132,8 @@ fn trigger_vk(t: Trigger) -> Option<u32> {
         Trigger::RightWin => VK_RWIN.0,
         Trigger::LeftWin => VK_LWIN.0,
         Trigger::CapsLock => VK_CAPITAL.0,
-        Trigger::F(n) => match n {
-            1 => VK_F1.0,
-            2 => VK_F2.0,
-            3 => VK_F3.0,
-            4 => VK_F4.0,
-            5 => VK_F5.0,
-            6 => VK_F6.0,
-            7 => VK_F7.0,
-            8 => VK_F8.0,
-            9 => VK_F9.0,
-            10 => VK_F10.0,
-            11 => VK_F11.0,
-            12 => VK_F12.0,
-            13 => VK_F13.0,
-            14 => VK_F14.0,
-            15 => VK_F15.0,
-            16 => VK_F16.0,
-            17 => VK_F17.0,
-            18 => VK_F18.0,
-            19 => VK_F19.0,
-            20 => VK_F20.0,
-            21 => VK_F21.0,
-            22 => VK_F22.0,
-            23 => VK_F23.0,
-            24 => VK_F24.0,
-            _ => return None,
-        },
     };
-    Some(vk as u32)
+    vk as u32
 }
 
 pub struct Hotkey {
@@ -159,13 +145,10 @@ pub struct Hotkey {
 
 impl Hotkey {
     pub fn start(config: Config) -> Result<Self> {
-        let trigger_vk = trigger_vk(config.trigger)
-            .ok_or_else(|| anyhow!("invalid trigger: {:?}", config.trigger))?;
-
         let (tx, rx) = mpsc::unbounded_channel();
         let state = HookState {
-            trigger_vk,
-            mode: config.mode,
+            trigger_vk: AtomicU32::new(trigger_vk(config.trigger)),
+            mode: AtomicU8::new(encode_mode(config.mode)),
             is_pressed: AtomicBool::new(false),
             logical: Mutex::new(LogicalState::Idle),
             tx,
@@ -202,11 +185,51 @@ impl Hotkey {
     pub async fn recv(&mut self) -> Option<HotkeyEvent> {
         self.events.recv().await
     }
+
+    /// Swap trigger / mode live. If a recording session is currently
+    /// active (user pressed the old trigger and hasn't released), we
+    /// synthesize a `Release` so the main loop ends that session
+    /// cleanly — otherwise it would hang waiting for a key-up on a key
+    /// the hook no longer watches.
+    pub fn reconfigure(&self, config: Config) -> Result<()> {
+        let state = HOOK_STATE
+            .get()
+            .context("Hotkey::reconfigure called before Hotkey::start")?;
+        let was_recording = {
+            let mut logical = state
+                .logical
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            let was = matches!(*logical, LogicalState::Hold { .. } | LogicalState::Toggle);
+            *logical = LogicalState::Idle;
+            was
+        };
+        state.is_pressed.store(false, Ordering::Release);
+        state
+            .trigger_vk
+            .store(trigger_vk(config.trigger), Ordering::Release);
+        state
+            .mode
+            .store(encode_mode(config.mode), Ordering::Release);
+        if was_recording {
+            let _ = state.tx.send(HotkeyEvent::Release);
+        }
+        log::info!(
+            "hotkey reconfigured: trigger={:?}, mode={:?}",
+            config.trigger,
+            config.mode
+        );
+        Ok(())
+    }
 }
 
 struct HookState {
-    trigger_vk: u32,
-    mode: Mode,
+    /// Atomic because `Hotkey::reconfigure` swaps this live from the
+    /// main loop while the hook thread is reading on every keystroke.
+    trigger_vk: AtomicU32,
+    /// Encoded via `encode_mode` / `decode_mode` — u8 because atomics
+    /// over enum aren't built in.
+    mode: AtomicU8,
     /// Mirrors the physical key state so we can filter out auto-repeats
     /// (low-level hook has no repeat flag like `WM_KEYDOWN`'s lParam bit 30).
     is_pressed: AtomicBool,
@@ -291,7 +314,7 @@ extern "system" fn low_level_kbd_proc(n_code: i32, w_param: WPARAM, l_param: LPA
     // Safety: Windows guarantees lParam points to a valid KBDLLHOOKSTRUCT
     // for the duration of this callback when nCode >= 0.
     let kb = unsafe { &*(l_param.0 as *const KBDLLHOOKSTRUCT) };
-    if kb.vkCode != state.trigger_vk {
+    if kb.vkCode != state.trigger_vk.load(Ordering::Acquire) {
         return unsafe { CallNextHookEx(None, n_code, w_param, l_param) };
     }
 
@@ -316,7 +339,8 @@ fn handle_key_down(state: &HookState) {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    match state.mode {
+    let mode = decode_mode(state.mode.load(Ordering::Acquire));
+    match mode {
         Mode::Combo | Mode::Hold => match *logical {
             LogicalState::Idle => {
                 *logical = LogicalState::Hold {
@@ -356,7 +380,8 @@ fn handle_key_up(state: &HookState) {
         Ok(g) => g,
         Err(p) => p.into_inner(),
     };
-    match state.mode {
+    let mode = decode_mode(state.mode.load(Ordering::Acquire));
+    match mode {
         Mode::Combo => match *logical {
             LogicalState::Hold { down_at } => {
                 let elapsed = down_at.elapsed().as_millis();

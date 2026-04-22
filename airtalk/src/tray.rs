@@ -21,7 +21,7 @@
 
 use std::ffi::c_void;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -474,10 +474,4 @@ fn emit(event: TrayEvent) {
     if let Some(tx) = EVENT_TX.get() {
         let _ = tx.send(event);
     }
-}
-
-// Quiet a warning on the unused Arc import since Mutex is from std::sync
-#[allow(dead_code)]
-fn _arc_marker() -> Arc<()> {
-    Arc::new(())
 }

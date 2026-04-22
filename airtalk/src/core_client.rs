@@ -70,9 +70,6 @@ impl SpawnConfig {
 ///
 /// `shutdown` is idempotent — calling it twice is a no-op on the second
 /// call.
-// Most methods land unused until hotkey + audio modules ship. Silence
-// the dead-code noise for now — they're the externally-facing API.
-#[allow(dead_code)]
 pub struct CoreClient {
     next_id: Arc<AtomicU64>,
     stdin: Arc<Mutex<Option<ChildStdin>>>,
@@ -82,7 +79,6 @@ pub struct CoreClient {
     _job: win::JobObject,
 }
 
-#[allow(dead_code)]
 impl CoreClient {
     pub async fn spawn(cfg: SpawnConfig) -> Result<Self> {
         log::info!("spawning core: {} {:?}", cfg.exe.display(), cfg.args);

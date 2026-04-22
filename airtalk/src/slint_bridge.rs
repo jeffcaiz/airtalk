@@ -160,7 +160,6 @@ impl SlintBridge {
     /// (so `spawn_blocking` paste workers don't have to borrow the
     /// bridge) and go through that — but this symmetric API exists for
     /// call sites that already hold `&SlintBridge`.
-    #[allow(dead_code)]
     pub fn show_recovery(&self, text: String) {
         let _ = self.request_tx.send(Request::ShowRecovery(text));
     }

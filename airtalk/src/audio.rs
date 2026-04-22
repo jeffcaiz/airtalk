@@ -53,7 +53,6 @@ enum ControlMsg {
 }
 
 /// Handle to a running capture stream. Drop to stop capture.
-#[allow(dead_code)] // most methods exposed for hotkey / overlay / tray wiring
 pub struct AudioCapture {
     gate: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
@@ -63,7 +62,6 @@ pub struct AudioCapture {
     _thread: JoinHandle<()>,
 }
 
-#[allow(dead_code)]
 impl AudioCapture {
     /// Start capture on the requested device. Blocks briefly (≤ 3 s) while
     /// the capture thread builds its first stream so failures surface here.
@@ -130,10 +128,6 @@ impl AudioCapture {
 
     pub fn close_gate(&self) {
         self.gate.store(false, Ordering::Release);
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.gate.load(Ordering::Acquire)
     }
 
     /// Current RMS level in [0.0, 1.0].

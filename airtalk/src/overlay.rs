@@ -10,6 +10,9 @@
 //!                                     small phase-offset per bar so each
 //!                                     dances slightly differently.
 //!   * [`OverlayState::Processing`] — 3 bouncing dots.
+//!   * [`OverlayState::Success`]    — green ✓ with a stroke-in intro,
+//!                                     auto-returns to Idle after ~800 ms.
+//!                                     Fires after a successful paste.
 //!   * [`OverlayState::Error`]      — red X, auto-returns to Idle after
 //!                                     ~800 ms.
 //!
@@ -78,6 +81,10 @@ const BORDER_ALPHA: f32 = 0.08;
 // Accent colors per state. f32 in [0,1] so alpha modulation is cheap.
 const RECORDING_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // red — matches Error
 const PROCESSING_RGB: [f32; 3] = [0.35, 0.78, 1.0]; // light blue
+// Cool teal-leaning green — reads "done" against the recording red and
+// processing blue without the highlighter-pen vibe of a pure #4ade80.
+// Roughly #38d699.
+const SUCCESS_RGB: [f32; 3] = [0.22, 0.84, 0.60];
 const ERROR_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // same red as recording
 
 // ─── Public API ────────────────────────────────────────────────────────
@@ -87,12 +94,26 @@ pub enum OverlayState {
     Idle,
     Recording,
     Processing,
+    Success,
     Error,
 }
 
 pub struct Overlay {
     cmd_tx: mpsc::Sender<Command>,
     _thread: JoinHandle<()>,
+}
+
+/// Cheap clonable handle for setting overlay state from worker tasks
+/// (e.g. the paste `spawn_blocking`) without passing `&Overlay` around.
+#[derive(Clone)]
+pub struct OverlayHandle {
+    cmd_tx: mpsc::Sender<Command>,
+}
+
+impl OverlayHandle {
+    pub fn set_state(&self, state: OverlayState) {
+        let _ = self.cmd_tx.send(Command::SetState(state));
+    }
 }
 
 enum Command {
@@ -126,6 +147,12 @@ impl Overlay {
 
     pub fn set_state(&self, state: OverlayState) {
         let _ = self.cmd_tx.send(Command::SetState(state));
+    }
+
+    pub fn handle(&self) -> OverlayHandle {
+        OverlayHandle {
+            cmd_tx: self.cmd_tx.clone(),
+        }
     }
 }
 
@@ -205,12 +232,19 @@ fn run_overlay_thread(
                 }
             }
 
-            // Auto-advance Error → Idle after its flash.
-            if matches!(state, OverlayState::Error)
-                && state_at.elapsed() > Duration::from_millis(800)
-            {
-                state = OverlayState::Idle;
-                state_at = Instant::now();
+            // Auto-advance Success / Error → Idle after their flash.
+            // Success lingers a bit longer so the check feels like a
+            // confirmation rather than a blink.
+            let auto_advance_after = match state {
+                OverlayState::Success => Some(Duration::from_millis(1100)),
+                OverlayState::Error => Some(Duration::from_millis(800)),
+                _ => None,
+            };
+            if let Some(d) = auto_advance_after {
+                if state_at.elapsed() > d {
+                    state = OverlayState::Idle;
+                    state_at = Instant::now();
+                }
             }
 
             // Fade envelope.
@@ -295,6 +329,9 @@ fn render(
         OverlayState::Recording => draw_waveform(pixmap, w, h, anim_t, rms, visible_alpha, scale),
         OverlayState::Processing => {
             draw_processing_dots(pixmap, w, h, anim_t, visible_alpha, scale)
+        }
+        OverlayState::Success => {
+            draw_success_check(pixmap, w, h, state_elapsed, visible_alpha, scale)
         }
         OverlayState::Error => draw_error_x(pixmap, w, h, state_elapsed, visible_alpha, scale),
         OverlayState::Idle => {}
@@ -438,6 +475,64 @@ fn draw_processing_dots(pixmap: &mut Pixmap, w: f32, h: f32, anim_t: f32, alpha:
                 None,
             );
         }
+    }
+}
+
+fn draw_success_check(
+    pixmap: &mut Pixmap,
+    w: f32,
+    h: f32,
+    state_elapsed: Duration,
+    alpha: f32,
+    scale: f32,
+) {
+    // Checkmark geometry. Two connected segments: a short down-slope
+    // into p2 (the "elbow"), then a long up-slope out to p3.
+    let r = 13.0 * scale;
+    let cx = w / 2.0;
+    let cy = h / 2.0;
+    let p1 = (cx - r * 0.70, cy - r * 0.05);
+    let p2 = (cx - r * 0.18, cy + r * 0.45);
+    let p3 = (cx + r * 0.72, cy - r * 0.48);
+
+    // Stroke-in over the first ~320 ms, with an ease-out curve so the pen
+    // "lands" decisively instead of crawling linearly. At t=0 we render a
+    // zero-length path, which tiny-skia renders as a round dot (stroke cap)
+    // — a nice seed for the animation to grow from.
+    let t_raw = (state_elapsed.as_secs_f32() / 0.32).clamp(0.0, 1.0);
+    let t = 1.0 - (1.0 - t_raw).powi(2);
+    let len_short = ((p2.0 - p1.0).powi(2) + (p2.1 - p1.1).powi(2)).sqrt();
+    let len_long = ((p3.0 - p2.0).powi(2) + (p3.1 - p2.1).powi(2)).sqrt();
+    let drawn = (len_short + len_long) * t;
+
+    let mut pb = PathBuilder::new();
+    pb.move_to(p1.0, p1.1);
+    if drawn <= len_short {
+        let k = if len_short > 0.0 { drawn / len_short } else { 1.0 };
+        pb.line_to(p1.0 + (p2.0 - p1.0) * k, p1.1 + (p2.1 - p1.1) * k);
+    } else {
+        pb.line_to(p2.0, p2.1);
+        let k = if len_long > 0.0 {
+            ((drawn - len_short) / len_long).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        pb.line_to(p2.0 + (p3.0 - p2.0) * k, p2.1 + (p3.1 - p2.1) * k);
+    }
+
+    let mut paint = Paint::default();
+    paint.set_color(
+        Color::from_rgba(SUCCESS_RGB[0], SUCCESS_RGB[1], SUCCESS_RGB[2], alpha)
+            .unwrap_or_else(|| Color::from_rgba8(56, 214, 153, 255)),
+    );
+    paint.anti_alias = true;
+    let mut stroke = Stroke::default();
+    stroke.width = 3.5 * scale;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    stroke.line_join = tiny_skia::LineJoin::Round;
+
+    if let Some(path) = pb.finish() {
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
     }
 }
 

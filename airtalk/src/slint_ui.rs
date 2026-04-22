@@ -157,6 +157,10 @@ export component SettingsWindow inherits Window {
     in-out property <bool> asr-key-pending-clear;
     in-out property <bool> llm-key-saved;
     in-out property <bool> llm-key-pending-clear;
+    // Indexes into the hardcoded ComboBox models below. Must stay in
+    // sync with the `TRIGGERS` / `MODES` tables in settings.rs.
+    in-out property <int> hotkey-trigger-index;
+    in-out property <int> hotkey-mode-index;
     in-out property <string> status-text;
 
     callback save-requested();
@@ -238,6 +242,52 @@ export component SettingsWindow inherits Window {
                                 model: root.device-model;
                                 current-index <=> root.device-index;
                             }
+                        }
+                    }
+                }
+
+                // ─── Hotkey ──────────────────────────────────────────
+                Card {
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+
+                        SectionTitle { text: "Hotkey"; }
+                        SectionHint {
+                            text: "AirTalk consumes this key system-wide — other apps will not receive it.";
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                spacing: 4px;
+                                horizontal-stretch: 1;
+                                FieldLabel { text: "Trigger"; }
+                                ComboBox {
+                                    // Order must match the TRIGGERS table in settings.rs.
+                                    model: [
+                                        "Right Alt", "Left Alt",
+                                        "Right Ctrl", "Left Ctrl",
+                                        "Right Shift", "Left Shift",
+                                        "Right Win", "Left Win",
+                                        "Caps Lock",
+                                    ];
+                                    current-index <=> root.hotkey-trigger-index;
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 4px;
+                                horizontal-stretch: 1;
+                                FieldLabel { text: "Mode"; }
+                                ComboBox {
+                                    // Order must match the MODES table in settings.rs.
+                                    model: ["Combo", "Hold", "Tap"];
+                                    current-index <=> root.hotkey-mode-index;
+                                }
+                            }
+                        }
+                        FieldHint {
+                            text: "Combo: hold to talk, or short-tap then tap again to stop. Hold: push-to-talk. Tap: press once to start, again to stop.";
                         }
                     }
                 }

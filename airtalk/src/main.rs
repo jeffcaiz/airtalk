@@ -408,9 +408,10 @@ async fn run_dev_recovery(custom: Option<String>) -> Result<()> {
 async fn run_hotkey_loop() -> Result<()> {
     let initial_snapshot = settings::load_snapshot()?;
     let mut current_mic = settings::audio_choice_from_config(&initial_snapshot.config);
+    let mut current_hotkey = settings::hotkey_config_from_config(&initial_snapshot.config);
     let mut audio = AudioCapture::start(current_mic.clone())?;
     let overlay = Overlay::start(audio.level_source())?;
-    let mut hotkey = Hotkey::start(hotkey::Config::default())?;
+    let mut hotkey = Hotkey::start(current_hotkey)?;
     let mut tray = Tray::start(current_mic.clone())?;
     let (slint, mut slint_events) = SlintBridge::new();
     log::info!("mic: \"{}\"", audio.device_name());
@@ -545,17 +546,23 @@ async fn run_hotkey_loop() -> Result<()> {
                             stats.total_latency_ms,
                             text,
                         );
-                        overlay.set_state(OverlayState::Idle);
-                        // Paste on the blocking pool so the select loop keeps
-                        // responding. On failure, hand the text off to the
-                        // recovery popup so the user can still recover it.
+                        // Keep Processing visible through the paste — we flip
+                        // to Success (or Idle, on failure) from inside the
+                        // blocking task so the user gets a visual confirmation
+                        // that text actually landed. Without this, the overlay
+                        // just disappears when the result arrives and paste is
+                        // silent.
                         let text_to_paste = text.clone();
                         let recovery_handle = slint.recovery_handle();
+                        let overlay_handle = overlay.handle();
                         tokio::task::spawn_blocking(move || {
                             match paste::paste(&text_to_paste, &paste::Config::default()) {
-                                Ok(_) => {}
+                                Ok(_) => {
+                                    overlay_handle.set_state(OverlayState::Success);
+                                }
                                 Err(e) => {
                                     log::warn!("paste failed: {e}");
+                                    overlay_handle.set_state(OverlayState::Idle);
                                     recovery_handle.show(text_to_paste);
                                 }
                             }
@@ -585,6 +592,14 @@ async fn run_hotkey_loop() -> Result<()> {
                             audio.switch_to(desired_mic.clone());
                             tray.set_current_mic(desired_mic.clone());
                             current_mic = desired_mic;
+                        }
+                        let desired_hotkey = settings::hotkey_config_from_config(&snapshot.config);
+                        if desired_hotkey != current_hotkey {
+                            if let Err(e) = hotkey.reconfigure(desired_hotkey) {
+                                log::warn!("hotkey reconfigure failed: {e:#}");
+                            } else {
+                                current_hotkey = desired_hotkey;
+                            }
                         }
                         match restart_core(&mut client).await {
                             Ok(()) => {
