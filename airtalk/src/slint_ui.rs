@@ -134,6 +134,7 @@ component StatusBadge inherits Rectangle {
 export component SettingsWindow inherits Window {
     in-out property <bool> autostart-enabled;
     in-out property <string> asr-lang;
+    in-out property <string> asr-base-url;
     in-out property <string> asr-key-input;
     in-out property <string> asr-hotwords;
     in-out property <bool> llm-enabled;
@@ -142,6 +143,11 @@ export component SettingsWindow inherits Window {
     in-out property <string> llm-model;
     in-out property <[string]> device-model;
     in-out property <int> device-index;
+    // Region ComboBox picks a DashScope endpoint preset (Mainland /
+    // International). Selecting a value overwrites `asr-base-url` and
+    // `llm-base-url` in one shot. Derived on load from the URLs, not
+    // persisted as its own field — URLs remain the source of truth.
+    in-out property <int> region-index;
     // Credential Manager doesn't echo secrets back, so the UI can't show
     // the saved value. Instead we surface a visible badge driven by
     // these flags: `*-key-saved` comes from the snapshot at open time;
@@ -247,6 +253,41 @@ export component SettingsWindow inherits Window {
                             text: "Qwen3-ASR on DashScope. API key is stored in Windows Credential Manager.";
                         }
 
+                        // ── Region preset ────────────────────────────
+                        // Selecting a region overwrites both the ASR
+                        // and LLM base URL fields in one shot. Users
+                        // outside China should pick International so
+                        // their intl-region API key authenticates
+                        // against the right endpoint. The two URLs
+                        // below remain editable for other providers.
+                        VerticalLayout {
+                            spacing: 4px;
+                            FieldLabel { text: "Region"; }
+                            FieldHint {
+                                text: "DashScope endpoint preset. Overwrites both base URLs below.";
+                            }
+                            ComboBox {
+                                model: ["Mainland China", "International"];
+                                current-index <=> root.region-index;
+                                // Slint std-widgets ComboBox.selected delivers
+                                // the string value, NOT the index. Comparing
+                                // `value == 0` silently evaluates to false
+                                // regardless of selection — always hit the
+                                // `else` branch. Match the string instead.
+                                // KEEP URLS IN SYNC with MAINLAND_ASR_URL /
+                                // MAINLAND_LLM_URL in settings.rs.
+                                selected(value) => {
+                                    if (value == "Mainland China") {
+                                        root.asr-base-url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+                                        root.llm-base-url = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+                                    } else {
+                                        root.asr-base-url = "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+                                        root.llm-base-url = "https://dashscope-intl.aliyuncs.com/compatible-mode/v1";
+                                    }
+                                }
+                            }
+                        }
+
                         VerticalLayout {
                             spacing: 4px;
                             HorizontalLayout {
@@ -302,6 +343,17 @@ export component SettingsWindow inherits Window {
                                 LineEdit {
                                     text <=> root.asr-lang;
                                 }
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            FieldLabel { text: "Base URL"; }
+                            FieldHint {
+                                text: "Qwen3-ASR endpoint. Use dashscope-intl.aliyuncs.com if your DashScope account is in the International region.";
+                            }
+                            LineEdit {
+                                text <=> root.asr-base-url;
                             }
                         }
 

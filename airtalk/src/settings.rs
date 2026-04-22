@@ -23,6 +23,15 @@ const LLM_CRED_TARGET: &str = "airtalk/llm_api_key";
 const ENV_ASR_KEY: &str = "AIRTALK_ASR_API_KEY";
 const ENV_LLM_KEY: &str = "AIRTALK_LLM_API_KEY";
 
+// DashScope region presets. The Region ComboBox in the Settings UI
+// writes these literal URLs into the two base-url fields when a user
+// picks a region. KEEP IN SYNC with the matching constants embedded
+// in slint_ui.rs (Slint's slint!{} block can't reference Rust consts,
+// so the strings are duplicated).
+const MAINLAND_ASR_URL: &str =
+    "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+const MAINLAND_LLM_URL: &str = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -35,6 +44,15 @@ pub struct AppConfig {
 pub struct AsrConfig {
     pub lang: String,
     pub hotwords_content: String,
+    // `serde(default)` so existing config.toml files (written before
+    // this field existed) still deserialize — missing value falls
+    // back to the DashScope mainland endpoint.
+    #[serde(default = "default_asr_base_url")]
+    pub base_url: String,
+}
+
+fn default_asr_base_url() -> String {
+    MAINLAND_ASR_URL.to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,10 +73,11 @@ impl Default for AppConfig {
             asr: AsrConfig {
                 lang: "auto".into(),
                 hotwords_content: String::new(),
+                base_url: MAINLAND_ASR_URL.into(),
             },
             llm: LlmConfig {
                 enabled: false,
-                base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1".into(),
+                base_url: MAINLAND_LLM_URL.into(),
                 model: "qwen-flash".into(),
             },
             audio: AudioConfig {
@@ -159,6 +178,8 @@ pub fn build_spawn_config() -> Result<SpawnConfig> {
         .or_else(|| std::env::var(ENV_ASR_KEY).ok())
         .context("ASR API key is not configured")?;
     spawn.env.push((ENV_ASR_KEY.into(), asr_key));
+    spawn.args.push("--asr-base-url".into());
+    spawn.args.push(config.asr.base_url.clone());
     spawn.args.push("--asr-lang".into());
     spawn.args.push(config.asr.lang.clone());
 
@@ -225,6 +246,9 @@ fn validate_config(config: &AppConfig) -> Result<()> {
     if config.asr.lang.trim().is_empty() {
         bail!("ASR language cannot be empty");
     }
+    if config.asr.base_url.trim().is_empty() {
+        bail!("ASR base URL cannot be empty");
+    }
     if let Err(msg) = validate_hotwords(&config.asr.hotwords_content) {
         bail!("{msg}");
     }
@@ -280,10 +304,8 @@ fn validate_hotwords(content: &str) -> std::result::Result<(), String> {
 fn normalize_config(config: &mut AppConfig) {
     config.asr.lang = trimmed_or_default(&config.asr.lang, "auto");
     config.asr.hotwords_content = normalize_multiline(&config.asr.hotwords_content);
-    config.llm.base_url = trimmed_or_default(
-        &config.llm.base_url,
-        "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    );
+    config.asr.base_url = trimmed_or_default(&config.asr.base_url, MAINLAND_ASR_URL);
+    config.llm.base_url = trimmed_or_default(&config.llm.base_url, MAINLAND_LLM_URL);
     config.llm.model = trimmed_or_default(&config.llm.model, "qwen-flash");
     config.audio.input_device = trimmed_or_default(&config.audio.input_device, "auto");
 }
@@ -350,7 +372,18 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
     window.set_device_index(selected);
     window.set_autostart_enabled(snapshot.autostart_enabled);
     window.set_asr_lang(snapshot.config.asr.lang.clone().into());
+    window.set_asr_base_url(snapshot.config.asr.base_url.clone().into());
     window.set_asr_hotwords(snapshot.config.asr.hotwords_content.clone().into());
+    // Region ComboBox is a UI convenience preset that rewrites both
+    // ASR and LLM base URLs. Derive its initial selection from the
+    // LLM URL (single source for the heuristic — if user mixed
+    // mainland + intl urls by hand, we prefer the LLM one).
+    let region_index = if snapshot.config.llm.base_url.contains("dashscope-intl") {
+        1
+    } else {
+        0
+    };
+    window.set_region_index(region_index);
     window.set_llm_enabled(snapshot.config.llm.enabled);
     window.set_llm_base_url(snapshot.config.llm.base_url.clone().into());
     window.set_llm_model(snapshot.config.llm.model.clone().into());
@@ -397,6 +430,7 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
         asr: AsrConfig {
             lang: window.get_asr_lang().trim().to_string(),
             hotwords_content: window.get_asr_hotwords().to_string(),
+            base_url: window.get_asr_base_url().trim().to_string(),
         },
         llm: LlmConfig {
             enabled: window.get_llm_enabled(),
