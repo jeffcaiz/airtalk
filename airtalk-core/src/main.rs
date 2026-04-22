@@ -153,11 +153,9 @@ async fn main() -> anyhow::Result<()> {
     // Ready. The UI treats "no Ready within 5s" as a boot failure, so
     // we must not emit Ready until we're fully ready to accept work.
 
-    let hotwords = load_hotwords(args.hotwords_file.as_deref())
-        .context("loading hotwords")?;
+    let hotwords = load_hotwords(args.hotwords_file.as_deref()).context("loading hotwords")?;
 
-    let prompt = prompt::load(args.llm_prompt_file.as_deref())
-        .context("loading LLM prompt")?;
+    let prompt = prompt::load(args.llm_prompt_file.as_deref()).context("loading LLM prompt")?;
 
     let asr_audio_format = AudioFormat::from_str(&args.asr_audio_format)
         .with_context(|| format!("parsing --asr-audio-format {:?}", args.asr_audio_format))?;
@@ -219,13 +217,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (response_tx, mut response_rx) = mpsc::unbounded_channel::<Response>();
 
-    let session_handle = session::spawn(
-        response_tx.clone(),
-        config,
-        asr,
-        llm,
-        vad_factory,
-    );
+    let session_handle = session::spawn(response_tx.clone(), config, asr, llm, vad_factory);
 
     // Announce readiness. This MUST go to the stdout writer so it gets
     // properly framed; don't write to stdout directly.
@@ -309,8 +301,8 @@ fn load_hotwords(path: Option<&std::path::Path>) -> anyhow::Result<Vec<String>> 
     match path {
         None => Ok(Vec::new()),
         Some(p) => {
-            let s = std::fs::read_to_string(p)
-                .with_context(|| format!("reading {}", p.display()))?;
+            let s =
+                std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?;
             Ok(s.lines()
                 .map(|l| l.trim())
                 .filter(|l| !l.is_empty() && !l.starts_with('#'))

@@ -48,7 +48,6 @@ pub enum DeviceChoice {
     Named(String),
 }
 
-
 enum ControlMsg {
     SwitchDevice(DeviceChoice),
 }
@@ -112,7 +111,10 @@ impl AudioCapture {
     /// Human-readable name of the currently-open input device. Returns
     /// `"<unavailable: …>"` if the last rebuild couldn't open a device.
     pub fn device_name(&self) -> String {
-        self.device_name.lock().map(|g| g.clone()).unwrap_or_default()
+        self.device_name
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default()
     }
 
     /// Shared handle to the current RMS level atomic. Clone for the
@@ -211,7 +213,8 @@ fn run_capture_thread(
                     if attempt != &choice {
                         log::warn!(
                             "preferred device unavailable ({:?}); using {:?}",
-                            choice, attempt
+                            choice,
+                            attempt
                         );
                     }
                     opened = Some(result);
@@ -427,7 +430,11 @@ impl CaptureState {
             let p = self.next_out_pos;
             let i = p.floor() as usize;
             let f = (p - i as f64) as f32;
-            let a = if i == 0 { self.prev_sample } else { mono[i - 1] };
+            let a = if i == 0 {
+                self.prev_sample
+            } else {
+                mono[i - 1]
+            };
             let b = mono[i];
             let s = a * (1.0 - f) + b * f;
 

@@ -46,7 +46,8 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, InvalidateRect, MonitorFromWindow, SelectObject, SetBkMode, SetTextColor,
     CLIP_DEFAULT_PRECIS, DEFAULT_CHARSET, DEFAULT_QUALITY, DT_CALCRECT, DT_CENTER, DT_NOPREFIX,
     DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, FW_NORMAL, FW_SEMIBOLD, HFONT, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, OUT_DEFAULT_PRECIS, PAINTSTRUCT, TRANSPARENT,
+    MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
@@ -72,9 +73,9 @@ const MAX_BODY_LINES: i32 = 6;
 const BUTTON_HEIGHT: i32 = 32;
 const BUTTON_WIDTH: i32 = 72;
 const CLOSE_SIZE: i32 = 22; // the × hit box
-// Rounded corners come from DwmSetWindowAttribute on Win 11; no manual
-// region math needed, so CORNER_RADIUS isn't currently referenced. Kept
-// here as a knob in case we ever add a Win 10 fallback via SetWindowRgn.
+                            // Rounded corners come from DwmSetWindowAttribute on Win 11; no manual
+                            // region math needed, so CORNER_RADIUS isn't currently referenced. Kept
+                            // here as a knob in case we ever add a Win 10 fallback via SetWindowRgn.
 #[allow(dead_code)]
 const CORNER_RADIUS: i32 = 12;
 const BOTTOM_MARGIN: i32 = 116; // clearance above the pill
@@ -372,7 +373,11 @@ impl Fonts {
     }
 }
 
-fn make_font(point_size: i32, weight: windows::Win32::Graphics::Gdi::FONT_WEIGHT, scale: f32) -> HFONT {
+fn make_font(
+    point_size: i32,
+    weight: windows::Win32::Graphics::Gdi::FONT_WEIGHT,
+    scale: f32,
+) -> HFONT {
     // CreateFontW's `cHeight` is in logical units; negative = point size.
     // DPI-scaled by our own scale factor because we opted the process into
     // PER_MONITOR_AWARE_V2 (Windows will not auto-scale for us).
@@ -454,7 +459,8 @@ unsafe fn present(hwnd: HWND, fonts: &Fonts, text: String) {
         phys_w,
         total_h,
         SWP_NOACTIVATE,
-    ).ok();
+    )
+    .ok();
 
     // Record layout into state for the WM_PAINT pass and hit-testing.
     with_state::<_, ()>(|s| {
@@ -523,7 +529,10 @@ unsafe fn emit_copy(hwnd: HWND) {
     if let Err(e) = paste::copy_to_clipboard(&text) {
         log::error!("recovery copy failed: {e}");
     } else {
-        log::info!("recovery: copied {} chars to clipboard", text.chars().count());
+        log::info!(
+            "recovery: copied {} chars to clipboard",
+            text.chars().count()
+        );
         emit(RecoveryEvent::Copied);
     }
     // Close regardless — user made their choice.
@@ -711,20 +720,29 @@ unsafe fn paint(hwnd: HWND) {
     let _ = GetClientRect(hwnd, &mut client);
 
     // Snapshot the bits of state we need — avoid holding the mutex across GDI calls.
-    let (visible, text, text_total_h, scroll_offset, body_rect, btn_copy, btn_close, hot_copy, scale) =
-        with_state::<_, (bool, String, i32, i32, RECT, RECT, RECT, bool, f32)>(|s| {
-            (
-                s.visible,
-                s.text.clone(),
-                s.text_total_h,
-                s.scroll_offset,
-                s.body_rect,
-                s.btn_copy,
-                s.btn_close,
-                s.hot_copy,
-                s.scale,
-            )
-        });
+    let (
+        visible,
+        text,
+        text_total_h,
+        scroll_offset,
+        body_rect,
+        btn_copy,
+        btn_close,
+        hot_copy,
+        scale,
+    ) = with_state::<_, (bool, String, i32, i32, RECT, RECT, RECT, bool, f32)>(|s| {
+        (
+            s.visible,
+            s.text.clone(),
+            s.text_total_h,
+            s.scroll_offset,
+            s.body_rect,
+            s.btn_copy,
+            s.btn_close,
+            s.hot_copy,
+            s.scale,
+        )
+    });
     if !visible {
         let _ = EndPaint(hwnd, &ps);
         return;
@@ -779,7 +797,12 @@ unsafe fn paint(hwnd: HWND) {
         bottom: body_rect.top - scroll_offset + text_total_h,
     };
     if !body_wide.is_empty() {
-        DrawTextW(hdc, &mut body_wide, &mut body_draw, DT_WORDBREAK | DT_NOPREFIX);
+        DrawTextW(
+            hdc,
+            &mut body_wide,
+            &mut body_draw,
+            DT_WORDBREAK | DT_NOPREFIX,
+        );
     }
     let _ = windows::Win32::Graphics::Gdi::RestoreDC(hdc, save_dc);
 

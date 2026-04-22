@@ -13,7 +13,9 @@
 //! - Expose async `begin` / `chunk` / `end` / `cancel` / `recv` / `shutdown`
 //!   methods over the NDJSON frame codec.
 
-use airtalk_proto::{read_frame_async, write_frame_async, ProtocolError, Request, Response, PROTOCOL_VERSION};
+use airtalk_proto::{
+    read_frame_async, write_frame_async, ProtocolError, Request, Response, PROTOCOL_VERSION,
+};
 use anyhow::{bail, Context, Result};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -389,4 +391,3 @@ mod win {
         Ok(())
     }
 }
-

@@ -149,10 +149,23 @@ impl SessionParams {
             });
 
         // Context: merge startup hotwords + per-session context.
+        //
+        // Hotwords come in as one term per line (UI enforces this); here
+        // we join them into a labeled word list so Qwen3-ASR reads them
+        // as "preserve-spelling" background knowledge rather than a bag
+        // of loose words. Label language tracks the resolved ASR
+        // language (English pin → English label; anything else → Chinese
+        // label, matching the primary-user bias). See
+        // `asr_context_usage.md`.
         let hotwords_joined = if config.hotwords.is_empty() {
             None
         } else {
-            Some(config.hotwords.join(", "))
+            let list = config.hotwords.join(", ");
+            let labeled = match resolved_lang.as_deref() {
+                Some("en") => format!("Preserve spelling: {list}"),
+                _ => format!("拼写保留：{list}"),
+            };
+            Some(labeled)
         };
         let context = match (hotwords_joined, per_session_context) {
             (None, None) => None,
@@ -753,5 +766,79 @@ fn build_llm_prompt(base: &str, context: Option<&str>) -> String {
     match context {
         Some(ctx) if !ctx.is_empty() => format!("{base}\n\nContext:\n{ctx}"),
         _ => base.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(hotwords: Vec<&str>, default_lang: &str) -> CoreConfig {
+        CoreConfig {
+            asr_default_language: default_lang.to_string(),
+            asr_concurrency: 1,
+            hotwords: hotwords.into_iter().map(String::from).collect(),
+            asr_default_enable_itn: false,
+            llm_enabled: true,
+            llm_prompt: String::new(),
+        }
+    }
+
+    #[test]
+    fn hotwords_wrapped_with_chinese_label_on_auto() {
+        let config = cfg(vec!["React", "Vite", "TypeScript"], "auto");
+        let p = SessionParams::resolve(1, &config, None, None, None, None);
+        assert_eq!(
+            p.context.as_deref(),
+            Some("拼写保留：React, Vite, TypeScript")
+        );
+    }
+
+    #[test]
+    fn hotwords_wrapped_with_english_label_when_pinned_en() {
+        let config = cfg(vec!["PostgreSQL", "CUDA"], "en");
+        let p = SessionParams::resolve(1, &config, None, None, None, None);
+        assert_eq!(
+            p.context.as_deref(),
+            Some("Preserve spelling: PostgreSQL, CUDA")
+        );
+    }
+
+    #[test]
+    fn hotwords_use_chinese_label_for_zh() {
+        let config = cfg(vec!["接口", "函数"], "zh");
+        let p = SessionParams::resolve(1, &config, None, None, None, None);
+        assert_eq!(p.context.as_deref(), Some("拼写保留：接口, 函数"));
+    }
+
+    #[test]
+    fn empty_hotwords_produces_no_context() {
+        let config = cfg(vec![], "auto");
+        let p = SessionParams::resolve(1, &config, None, None, None, None);
+        assert_eq!(p.context, None);
+    }
+
+    #[test]
+    fn per_session_context_appends_after_labeled_hotwords() {
+        let config = cfg(vec!["React"], "auto");
+        let p = SessionParams::resolve(
+            1,
+            &config,
+            Some("some extra context".into()),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            p.context.as_deref(),
+            Some("拼写保留：React\nsome extra context")
+        );
+    }
+
+    #[test]
+    fn per_session_language_overrides_default_for_label() {
+        let config = cfg(vec!["React"], "auto");
+        let p = SessionParams::resolve(1, &config, None, Some("en".into()), None, None);
+        assert_eq!(p.context.as_deref(), Some("Preserve spelling: React"));
     }
 }

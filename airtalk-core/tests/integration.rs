@@ -149,24 +149,22 @@ async fn mock_asr_ok(text: &str, lang: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(ASR_PATH))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "output": {
-                    "choices": [{
-                        "message": {
-                            "content": [{"text": text}],
-                            "annotations": [{"language": lang}]
-                        }
-                    }]
-                },
-                "usage": {
-                    "input_tokens_details": {"text_tokens": 0},
-                    "output_tokens_details": {"text_tokens": 3},
-                    "seconds": 1
-                },
-                "request_id": "mock"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "output": {
+                "choices": [{
+                    "message": {
+                        "content": [{"text": text}],
+                        "annotations": [{"language": lang}]
+                    }
+                }]
+            },
+            "usage": {
+                "input_tokens_details": {"text_tokens": 0},
+                "output_tokens_details": {"text_tokens": 3},
+                "seconds": 1
+            },
+            "request_id": "mock"
+        })))
         .mount(&server)
         .await;
     server
@@ -176,18 +174,16 @@ async fn mock_llm_ok(content: &str) -> MockServer {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path(LLM_PATH))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({
-                "choices": [{
-                    "message": {"content": content}
-                }],
-                "usage": {
-                    "prompt_tokens": 30,
-                    "completion_tokens": 10,
-                    "total_tokens": 40
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "message": {"content": content}
+            }],
+            "usage": {
+                "prompt_tokens": 30,
+                "completion_tokens": 10,
+                "total_tokens": 40
+            }
+        })))
         .mount(&server)
         .await;
     server

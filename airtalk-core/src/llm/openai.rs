@@ -149,9 +149,8 @@ impl LlmProvider for OpenAiLlm {
             anyhow::bail!("HTTP {}: {}", status.as_u16(), truncate(&body_text, 500));
         }
 
-        let parsed: ChatResponse = serde_json::from_str(&body_text).with_context(|| {
-            format!("parsing LLM response: {}", truncate(&body_text, 500))
-        })?;
+        let parsed: ChatResponse = serde_json::from_str(&body_text)
+            .with_context(|| format!("parsing LLM response: {}", truncate(&body_text, 500)))?;
         let usage = parsed.usage.map(ChatUsage::into_proto);
         let cleaned = parsed
             .choices

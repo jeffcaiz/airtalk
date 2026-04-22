@@ -281,9 +281,8 @@ impl AsrProvider for QwenAsr {
             anyhow::bail!("HTTP {}: {}", status.as_u16(), truncate(&body_text, 500));
         }
 
-        let parsed: DashScopeResponse = serde_json::from_str(&body_text).with_context(|| {
-            format!("parsing ASR response: {}", truncate(&body_text, 500))
-        })?;
+        let parsed: DashScopeResponse = serde_json::from_str(&body_text)
+            .with_context(|| format!("parsing ASR response: {}", truncate(&body_text, 500)))?;
 
         // DashScope sometimes returns 200 with an error `code` in the
         // body. Defensive: treat any non-empty `code` as failure.

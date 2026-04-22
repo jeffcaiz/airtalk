@@ -10,8 +10,7 @@ use anyhow::{anyhow, Context, Result};
 
 /// `%APPDATA%\airtalk\` — the root for config, logs, and future preferences.
 pub fn app_data_dir() -> Result<PathBuf> {
-    let appdata =
-        std::env::var("APPDATA").map_err(|_| anyhow!("APPDATA env var not set"))?;
+    let appdata = std::env::var("APPDATA").map_err(|_| anyhow!("APPDATA env var not set"))?;
     let dir = PathBuf::from(appdata).join("airtalk");
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     Ok(dir)
@@ -24,8 +23,17 @@ pub fn logs_dir() -> Result<PathBuf> {
     Ok(d)
 }
 
-/// `%APPDATA%\airtalk\input-device.txt` — the preferred input device.
-/// Contains either the literal string `auto` or a cpal device name.
-pub fn input_device_pref_file() -> Result<PathBuf> {
-    Ok(app_data_dir()?.join("input-device.txt"))
+/// `%APPDATA%\airtalk\config.toml` — non-sensitive settings.
+pub fn config_file() -> Result<PathBuf> {
+    Ok(app_data_dir()?.join("config.toml"))
+}
+
+/// `%APPDATA%\airtalk\hotwords.txt` — materialized hotwords content for core.
+pub fn hotwords_file() -> Result<PathBuf> {
+    Ok(app_data_dir()?.join("hotwords.txt"))
+}
+
+/// `%APPDATA%\airtalk\prompt.txt` — materialized prompt content for core.
+pub fn prompt_file() -> Result<PathBuf> {
+    Ok(app_data_dir()?.join("prompt.txt"))
 }

@@ -129,7 +129,10 @@ fn open_clipboard(config: &Config) -> Result<()> {
         }
         sleep(config.open_retry);
     }
-    bail!("could not open clipboard after {} attempts", config.open_attempts)
+    bail!(
+        "could not open clipboard after {} attempts",
+        config.open_attempts
+    )
 }
 
 fn read_clipboard_unicode(config: &Config) -> Result<Option<String>> {

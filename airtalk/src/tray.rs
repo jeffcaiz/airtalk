@@ -38,13 +38,12 @@ use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW,
-    LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow,
-    TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HICON, HMENU, ICONINFO, IDC_ARROW,
-    MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
-    TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSEXW,
-    WS_OVERLAPPED,
+    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
+    PostMessageW, PostQuitMessage, RegisterClassExW, SetForegroundWindow, TrackPopupMenu,
+    TranslateMessage, CS_HREDRAW, CS_VREDRAW, HICON, HMENU, ICONINFO, IDC_ARROW, MF_CHECKED,
+    MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON,
+    WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_RBUTTONUP, WNDCLASSEXW, WS_OVERLAPPED,
 };
 
 use crate::audio::{self, DeviceChoice};
@@ -348,7 +347,9 @@ fn handle_menu_command(id: u32) {
             if let Some(list) = LAST_MIC_LIST.get() {
                 if let Ok(guard) = list.lock() {
                     if let Some(name) = guard.get(idx) {
-                        emit(TrayEvent::SelectMicrophone(DeviceChoice::Named(name.clone())));
+                        emit(TrayEvent::SelectMicrophone(DeviceChoice::Named(
+                            name.clone(),
+                        )));
                     }
                 }
             }

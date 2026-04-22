@@ -33,26 +33,26 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
-use tiny_skia::{
-    Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform,
-};
+use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Stroke, Transform};
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{
+    COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW, HDC,
+    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, GetMonitorInfoW,
     MonitorFromWindow, ReleaseDC, SelectObject, AC_SRC_ALPHA, AC_SRC_OVER, BITMAPINFO,
-    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HGDIOBJ, HMONITOR, MONITORINFO,
+    BITMAPINFOHEADER, BI_RGB, BLENDFUNCTION, DIB_RGB_COLORS, HDC, HGDIOBJ, HMONITOR, MONITORINFO,
     MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY,
 };
-use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
     GetSystemMetrics, LoadCursorW, PeekMessageW, PostQuitMessage, RegisterClassExW, SetWindowPos,
     ShowWindow, UpdateLayeredWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW, MSG,
-    PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SW_SHOWNOACTIVATE, ULW_ALPHA,
-    WM_DESTROY, WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-    WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SW_SHOWNOACTIVATE, ULW_ALPHA, WM_DESTROY,
+    WM_QUIT, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 // ─── Layout ────────────────────────────────────────────────────────────
@@ -76,9 +76,9 @@ const BG_RGBA: (u8, u8, u8, u8) = (28, 25, 25, 224); // #1c1919 @ ~0.88
 const BORDER_ALPHA: f32 = 0.08;
 
 // Accent colors per state. f32 in [0,1] so alpha modulation is cheap.
-const RECORDING_RGB: [f32; 3] = [1.0, 0.32, 0.32];   // red — matches Error
-const PROCESSING_RGB: [f32; 3] = [0.35, 0.78, 1.0];  // light blue
-const ERROR_RGB: [f32; 3] = [1.0, 0.32, 0.32];       // same red as recording
+const RECORDING_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // red — matches Error
+const PROCESSING_RGB: [f32; 3] = [0.35, 0.78, 1.0]; // light blue
+const ERROR_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // same red as recording
 
 // ─── Public API ────────────────────────────────────────────────────────
 
@@ -223,7 +223,11 @@ fn run_overlay_thread(
                 1.0
             };
             // k = speed; higher = snappier. Separate rates for in vs out.
-            let k = if target_alpha > visible_alpha { 9.0 } else { 6.0 };
+            let k = if target_alpha > visible_alpha {
+                9.0
+            } else {
+                6.0
+            };
             visible_alpha = ease_toward(visible_alpha, target_alpha, k, dt);
 
             // Render into pixmap.
@@ -289,7 +293,9 @@ fn render(
 
     match state {
         OverlayState::Recording => draw_waveform(pixmap, w, h, anim_t, rms, visible_alpha, scale),
-        OverlayState::Processing => draw_processing_dots(pixmap, w, h, anim_t, visible_alpha, scale),
+        OverlayState::Processing => {
+            draw_processing_dots(pixmap, w, h, anim_t, visible_alpha, scale)
+        }
         OverlayState::Error => draw_error_x(pixmap, w, h, state_elapsed, visible_alpha, scale),
         OverlayState::Idle => {}
     }
@@ -327,7 +333,15 @@ fn draw_pill_background(pixmap: &mut Pixmap, w: f32, h: f32, alpha: f32, scale: 
     pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
 }
 
-fn draw_waveform(pixmap: &mut Pixmap, w: f32, h: f32, anim_t: f32, rms: f32, alpha: f32, scale: f32) {
+fn draw_waveform(
+    pixmap: &mut Pixmap,
+    w: f32,
+    h: f32,
+    anim_t: f32,
+    rms: f32,
+    alpha: f32,
+    scale: f32,
+) {
     const BAR_COUNT: usize = 5;
     let bar_width = 7.0 * scale;
     let bar_gap = 5.0 * scale;
@@ -372,7 +386,13 @@ fn draw_waveform(pixmap: &mut Pixmap, w: f32, h: f32, anim_t: f32, rms: f32, alp
         let mut pb = PathBuilder::new();
         push_pill(&mut pb, x, y, bar_width, bar_h);
         if let Some(path) = pb.finish() {
-            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
@@ -410,12 +430,25 @@ fn draw_processing_dots(pixmap: &mut Pixmap, w: f32, h: f32, anim_t: f32, alpha:
         let mut pb = PathBuilder::new();
         pb.push_circle(cx, cy, dot_radius);
         if let Some(path) = pb.finish() {
-            pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+            pixmap.fill_path(
+                &path,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
         }
     }
 }
 
-fn draw_error_x(pixmap: &mut Pixmap, w: f32, h: f32, state_elapsed: Duration, alpha: f32, scale: f32) {
+fn draw_error_x(
+    pixmap: &mut Pixmap,
+    w: f32,
+    h: f32,
+    state_elapsed: Duration,
+    alpha: f32,
+    scale: f32,
+) {
     // Ease from 0 to full size over first 120ms so it "pops" in.
     let intro = (state_elapsed.as_secs_f32() / 0.12).clamp(0.0, 1.0);
     let r = 10.0 * scale * intro;

@@ -20,25 +20,26 @@
 
 mod audio;
 mod core_client;
-mod device_pref;
 mod hotkey;
 mod overlay;
 mod paste;
 mod paths;
 mod recovery;
+mod settings;
 #[cfg(windows)]
 mod single_instance;
 mod tray;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::time::{Duration, Instant};
 
 use airtalk_proto::Response;
 use audio::AudioCapture;
-use core_client::{CoreClient, SpawnConfig};
+use core_client::CoreClient;
 use hotkey::{Hotkey, HotkeyEvent};
 use overlay::{Overlay, OverlayState};
 use recovery::{Recovery, RecoveryEvent};
+use settings::{SettingsBridge, SettingsEvent};
 use tray::{Tray, TrayEvent};
 
 #[cfg(windows)]
@@ -89,9 +90,7 @@ async fn main() -> Result<()> {
         match single_instance::SingleInstance::acquire(SINGLE_INSTANCE_MUTEX) {
             Ok(guard) => guard,
             Err(single_instance::AcquireError::AlreadyRunning(_)) => {
-                show_info(
-                    "airtalk 已经在运行。\n\n请到任务栏右下角找到托盘图标使用。",
-                );
+                show_info("airtalk 已经在运行。\n\n请到任务栏右下角找到托盘图标使用。");
                 return Ok(());
             }
             Err(single_instance::AcquireError::CreateFailed(e)) => {
@@ -117,29 +116,20 @@ async fn main() -> Result<()> {
 async fn run(args: &Args) -> Result<()> {
     // Spawn core with whatever env keys the user has set. No LLM key →
     // run core with --no-llm so it still boots.
-    let mut cfg = SpawnConfig::default_sibling()?;
-    let has_llm_key = std::env::var("AIRTALK_LLM_API_KEY").is_ok();
-    for var in ["AIRTALK_ASR_API_KEY", "AIRTALK_LLM_API_KEY"] {
-        if let Ok(v) = std::env::var(var) {
-            cfg.env.push((var.into(), v));
-        }
-    }
-    if !has_llm_key {
-        cfg.args.push("--no-llm".into());
-    }
-
-    let client = CoreClient::spawn(cfg).await?;
     log::info!("handshake complete — core is ready to serve sessions");
 
     if args.smoke_test {
+        let client = spawn_core_from_settings().await?;
         tokio::time::sleep(Duration::from_millis(300)).await;
+        client.shutdown().await?;
     } else if args.dev_mic {
+        let client = spawn_core_from_settings().await?;
         run_dev_mic_timed(&client, args.seconds).await?;
+        client.shutdown().await?;
     } else {
-        run_hotkey_loop(&client).await?;
+        run_hotkey_loop().await?;
     }
 
-    client.shutdown().await?;
     log::info!("airtalk UI exiting cleanly");
     Ok(())
 }
@@ -147,9 +137,8 @@ async fn run(args: &Args) -> Result<()> {
 // ─── Logging: attached console if we have one, else rolling file ──────
 
 fn init_logging() {
-    let builder = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    );
+    let builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
     let mut builder = builder;
 
     #[cfg(windows)]
@@ -232,7 +221,8 @@ fn show_msgbox(msg: &str, is_error: bool) {
 /// Record from the default mic for `seconds` seconds, send to core with
 /// VAD on, print the final `Result`.
 async fn run_dev_mic_timed(client: &CoreClient, seconds: u64) -> Result<()> {
-    let mut audio = AudioCapture::start(device_pref::load())?;
+    let config = settings::load_snapshot()?;
+    let mut audio = AudioCapture::start(settings::audio_choice_from_config(&config.config))?;
     log::info!("dev-mic: input = \"{}\"", audio.device_name());
 
     let id = client.begin(true).await?;
@@ -285,14 +275,25 @@ async fn run_dev_mic_timed(client: &CoreClient, seconds: u64) -> Result<()> {
 
 /// Default runtime. Tray icon + overlay + hotkey; transcribed text is
 /// pasted into the focused window. Exits on tray Quit or Ctrl-C.
-async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
-    let initial_mic = device_pref::load();
-    let mut audio = AudioCapture::start(initial_mic.clone())?;
+async fn run_hotkey_loop() -> Result<()> {
+    let initial_snapshot = settings::load_snapshot()?;
+    let mut current_mic = settings::audio_choice_from_config(&initial_snapshot.config);
+    let mut audio = AudioCapture::start(current_mic.clone())?;
     let overlay = Overlay::start(audio.level_source())?;
     let mut hotkey = Hotkey::start(hotkey::Config::default())?;
-    let mut tray = Tray::start(initial_mic.clone())?;
+    let mut tray = Tray::start(current_mic.clone())?;
     let mut recovery = Recovery::start()?;
+    let mut settings_ui = SettingsBridge::new();
     log::info!("mic: \"{}\"", audio.device_name());
+
+    let mut client = match spawn_core_from_settings().await {
+        Ok(client) => Some(client),
+        Err(e) => {
+            log::warn!("core unavailable at startup: {e:#}");
+            settings_ui.open();
+            None
+        }
+    };
 
     let mut current_session: Option<u64> = None;
     let ctrl_c = tokio::signal::ctrl_c();
@@ -303,29 +304,36 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
             biased;
             res = &mut ctrl_c => {
                 res?;
-                shutdown_current_session(&mut current_session, &audio, client).await;
+                shutdown_current_session(&mut current_session, &audio, client.as_ref()).await;
                 overlay.set_state(OverlayState::Idle);
                 log::info!("Ctrl-C — exiting");
+                if let Some(client) = client.take() {
+                    client.shutdown().await?;
+                }
                 return Ok(());
             }
             tray_ev = tray.recv() => {
                 match tray_ev {
                     Some(TrayEvent::Quit) => {
-                        shutdown_current_session(&mut current_session, &audio, client).await;
+                        shutdown_current_session(&mut current_session, &audio, client.as_ref()).await;
                         overlay.set_state(OverlayState::Idle);
                         log::info!("tray: Quit — exiting");
+                        if let Some(client) = client.take() {
+                            client.shutdown().await?;
+                        }
                         return Ok(());
                     }
                     Some(TrayEvent::OpenSettings) => {
-                        // TODO: launch the settings window once that module lands.
-                        log::info!("tray: Settings requested (not yet implemented)");
+                        log::info!("tray: Settings requested");
+                        settings_ui.open();
                     }
                     Some(TrayEvent::SelectMicrophone(choice)) => {
                         log::info!("tray: switch mic → {choice:?}");
                         audio.switch_to(choice.clone());
-                        if let Err(e) = device_pref::save(&choice) {
+                        if let Err(e) = settings::save_audio_choice(&choice) {
                             log::warn!("could not persist mic choice: {e}");
                         }
+                        current_mic = choice.clone();
                         tray.set_current_mic(choice);
                     }
                     None => anyhow::bail!("tray channel closed"),
@@ -335,7 +343,9 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
                 match pcm {
                     Some(bytes) => {
                         if let Some(id) = current_session {
-                            client.chunk(id, bytes).await?;
+                            if let Some(client) = client.as_ref() {
+                                client.chunk(id, bytes).await?;
+                            }
                         }
                     }
                     None => anyhow::bail!("audio thread died"),
@@ -351,6 +361,11 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
             ev = hotkey.recv() => {
                 match ev {
                     Some(HotkeyEvent::Press) => {
+                        if client.is_none() {
+                            overlay.set_state(OverlayState::Error);
+                            settings_ui.open();
+                            continue;
+                        }
                         // Any previous recovery popup is implicitly answered
                         // by the user starting a new session — dismiss it.
                         recovery.hide();
@@ -358,9 +373,15 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
                             log::warn!("Press during session {old} — superseding");
                             audio.close_gate();
                             let _ = audio.drain_pending();
-                            let _ = client.cancel(old).await;
+                            if let Some(client) = client.as_ref() {
+                                let _ = client.cancel(old).await;
+                            }
                         }
-                        let id = client.begin(true).await?;
+                        let id = client
+                            .as_ref()
+                            .context("core unavailable")?
+                            .begin(true)
+                            .await?;
                         audio.open_gate();
                         current_session = Some(id);
                         overlay.set_state(OverlayState::Recording);
@@ -369,14 +390,16 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
                         if let Some(id) = current_session.take() {
                             audio.close_gate();
                             let _ = audio.drain_pending();
-                            client.end(id).await?;
+                            if let Some(client) = client.as_ref() {
+                                client.end(id).await?;
+                            }
                             overlay.set_state(OverlayState::Processing);
                         }
                     }
                     None => anyhow::bail!("hotkey channel closed"),
                 }
             }
-            resp = client.recv() => {
+            resp = recv_core(&client), if client.is_some() => {
                 match resp {
                     Some(Response::Result { text, stats, .. }) => {
                         log::info!(
@@ -418,6 +441,35 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
                     None => anyhow::bail!("core closed unexpectedly"),
                 }
             }
+            settings_ev = settings_ui.recv() => {
+                match settings_ev {
+                    Some(SettingsEvent::Applied(snapshot)) => {
+                        let desired_mic = settings::audio_choice_from_config(&snapshot.config);
+                        if desired_mic != current_mic {
+                            audio.switch_to(desired_mic.clone());
+                            tray.set_current_mic(desired_mic.clone());
+                            current_mic = desired_mic;
+                        }
+                        match restart_core(&mut client).await {
+                            Ok(()) => {
+                                overlay.set_state(OverlayState::Idle);
+                                log::info!("settings: applied");
+                            }
+                            Err(e) => {
+                                overlay.set_state(OverlayState::Error);
+                                show_info(&format!("Settings saved, but core restart failed:\n\n{e}"));
+                            }
+                        }
+                    }
+                    Some(SettingsEvent::Cancelled) => {
+                        log::info!("settings: cancelled");
+                    }
+                    Some(SettingsEvent::Failed(message)) => {
+                        show_info(&format!("Settings failed:\n\n{message}"));
+                    }
+                    None => anyhow::bail!("settings channel closed"),
+                }
+            }
         }
     }
 }
@@ -425,12 +477,35 @@ async fn run_hotkey_loop(client: &CoreClient) -> Result<()> {
 async fn shutdown_current_session(
     current: &mut Option<u64>,
     audio: &AudioCapture,
-    client: &CoreClient,
+    client: Option<&CoreClient>,
 ) {
     if let Some(id) = current.take() {
         audio.close_gate();
-        let _ = client.cancel(id).await;
+        if let Some(client) = client {
+            let _ = client.cancel(id).await;
+        }
     }
+}
+
+async fn spawn_core_from_settings() -> Result<CoreClient> {
+    let client = CoreClient::spawn(settings::build_spawn_config()?).await?;
+    log::info!("handshake complete — core is ready to serve sessions");
+    Ok(client)
+}
+
+async fn recv_core(client: &Option<CoreClient>) -> Option<Response> {
+    match client.as_ref() {
+        Some(client) => client.recv().await,
+        None => None,
+    }
+}
+
+async fn restart_core(client: &mut Option<CoreClient>) -> Result<()> {
+    let new_client = spawn_core_from_settings().await?;
+    if let Some(old_client) = client.replace(new_client) {
+        old_client.shutdown().await?;
+    }
+    Ok(())
 }
 
 fn print_result(

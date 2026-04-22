@@ -61,9 +61,7 @@ impl AudioFormat {
     pub fn encode(self, pcm: &[u8]) -> anyhow::Result<Vec<u8>> {
         match self {
             AudioFormat::Wav => Ok(pcm16_to_wav_16k_mono(pcm)),
-            AudioFormat::Opus { bitrate_bps } => {
-                pcm16_to_opus_ogg_16k_mono(pcm, bitrate_bps)
-            }
+            AudioFormat::Opus { bitrate_bps } => pcm16_to_opus_ogg_16k_mono(pcm, bitrate_bps),
         }
     }
 }
@@ -77,7 +75,9 @@ impl FromStr for AudioFormat {
             return Ok(AudioFormat::Wav);
         }
         if s.eq_ignore_ascii_case("opus") {
-            return Ok(AudioFormat::Opus { bitrate_bps: 24_000 });
+            return Ok(AudioFormat::Opus {
+                bitrate_bps: 24_000,
+            });
         }
         if let Some(rest) = s.strip_prefix("opus:").or_else(|| s.strip_prefix("OPUS:")) {
             let bitrate_bps = parse_bitrate(rest)?;
@@ -336,7 +336,9 @@ fn derive_serial() -> u32 {
         .map(|d| {
             // Mix seconds and nanos so two back-to-back calls in the
             // same millisecond still differ.
-            (d.as_secs() as u32).wrapping_mul(31).wrapping_add(d.subsec_nanos())
+            (d.as_secs() as u32)
+                .wrapping_mul(31)
+                .wrapping_add(d.subsec_nanos())
         })
         .unwrap_or(1)
 }
@@ -370,7 +372,9 @@ mod tests {
     fn parse_opus_default() {
         assert_eq!(
             AudioFormat::from_str("opus").unwrap(),
-            AudioFormat::Opus { bitrate_bps: 24_000 }
+            AudioFormat::Opus {
+                bitrate_bps: 24_000
+            }
         );
     }
 
@@ -378,15 +382,21 @@ mod tests {
     fn parse_opus_with_bitrate() {
         assert_eq!(
             AudioFormat::from_str("opus:16k").unwrap(),
-            AudioFormat::Opus { bitrate_bps: 16_000 }
+            AudioFormat::Opus {
+                bitrate_bps: 16_000
+            }
         );
         assert_eq!(
             AudioFormat::from_str("opus:24k").unwrap(),
-            AudioFormat::Opus { bitrate_bps: 24_000 }
+            AudioFormat::Opus {
+                bitrate_bps: 24_000
+            }
         );
         assert_eq!(
             AudioFormat::from_str("opus:32000").unwrap(),
-            AudioFormat::Opus { bitrate_bps: 32_000 }
+            AudioFormat::Opus {
+                bitrate_bps: 32_000
+            }
         );
     }
 
@@ -414,9 +424,11 @@ mod tests {
     fn opus_output_starts_with_ogg_and_opushead() {
         // 1 second of silence (16000 samples * 2 bytes).
         let pcm = vec![0u8; 32_000];
-        let opus = AudioFormat::Opus { bitrate_bps: 24_000 }
-            .encode(&pcm)
-            .unwrap();
+        let opus = AudioFormat::Opus {
+            bitrate_bps: 24_000,
+        }
+        .encode(&pcm)
+        .unwrap();
 
         // First page: OggS + OpusHead inside.
         assert_eq!(&opus[0..4], b"OggS", "first page magic");
@@ -434,9 +446,11 @@ mod tests {
     #[test]
     fn opus_stream_has_tags_and_eos() {
         let pcm = vec![0u8; 32_000];
-        let opus = AudioFormat::Opus { bitrate_bps: 16_000 }
-            .encode(&pcm)
-            .unwrap();
+        let opus = AudioFormat::Opus {
+            bitrate_bps: 16_000,
+        }
+        .encode(&pcm)
+        .unwrap();
 
         // OpusTags header must appear as the second page's packet.
         assert!(
@@ -481,9 +495,11 @@ mod tests {
             .collect();
         let pcm: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
-        let opus = AudioFormat::Opus { bitrate_bps: 24_000 }
-            .encode(&pcm)
-            .unwrap();
+        let opus = AudioFormat::Opus {
+            bitrate_bps: 24_000,
+        }
+        .encode(&pcm)
+        .unwrap();
 
         // Ballpark: 0.5 s at 24 kbps ≈ 1.5 KB raw opus, + Ogg headers
         // + ~25 pages × 28 B (we pack 50 packets/page so only 1 audio page).
@@ -500,8 +516,7 @@ mod tests {
         // and find the first audio page (header_type 0x00 or 0x04) with
         // a non-zero granule position.
         use audiopus::coder::Decoder;
-        let mut decoder =
-            Decoder::new(SampleRate::Hz16000, Channels::Mono).expect("Opus decoder");
+        let mut decoder = Decoder::new(SampleRate::Hz16000, Channels::Mono).expect("Opus decoder");
 
         // Find any 'OggS' page past the first two and feed its first
         // packet to the decoder — a successful decode proves the pipe
@@ -523,8 +538,7 @@ mod tests {
                             break;
                         }
                     }
-                    audio_packet =
-                        Some(opus[payload_start..payload_start + pkt_len].to_vec());
+                    audio_packet = Some(opus[payload_start..payload_start + pkt_len].to_vec());
                     break;
                 }
                 let payload_total: usize = lacing.iter().map(|&b| b as usize).sum();
@@ -551,7 +565,10 @@ mod tests {
     fn mime_types() {
         assert_eq!(AudioFormat::Wav.mime(), "audio/wav");
         assert_eq!(
-            AudioFormat::Opus { bitrate_bps: 24_000 }.mime(),
+            AudioFormat::Opus {
+                bitrate_bps: 24_000
+            }
+            .mime(),
             "audio/ogg"
         );
     }

@@ -35,8 +35,8 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage,
-    HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HHOOK,
+    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 /// Events emitted by the hotkey engine. Press starts a recording cycle;
@@ -189,7 +189,8 @@ impl Hotkey {
 
         log::info!(
             "hotkey installed: trigger={:?}, mode={:?}",
-            config.trigger, config.mode
+            config.trigger,
+            config.mode
         );
 
         Ok(Self {
@@ -220,7 +221,9 @@ struct HookState {
 enum LogicalState {
     Idle,
     /// Recording, key physically held.
-    Hold { down_at: Instant },
+    Hold {
+        down_at: Instant,
+    },
     /// Recording, key was released as a short tap — waiting for the next
     /// key-down to stop. Reached only in [`Mode::Combo`] and [`Mode::Tap`].
     Toggle,
@@ -238,17 +241,20 @@ fn run_hook_thread(init_tx: std::sync::mpsc::Sender<Result<()>>) {
             }
         };
 
-        let hook: HHOOK =
-            match SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_kbd_proc), Some(h_module.into()), 0)
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    let _ = init_tx.send(Err(
-                        anyhow::Error::from(e).context("SetWindowsHookExW(WH_KEYBOARD_LL)"),
-                    ));
-                    return;
-                }
-            };
+        let hook: HHOOK = match SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_kbd_proc),
+            Some(h_module.into()),
+            0,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = init_tx.send(Err(
+                    anyhow::Error::from(e).context("SetWindowsHookExW(WH_KEYBOARD_LL)")
+                ));
+                return;
+            }
+        };
 
         let _ = init_tx.send(Ok(()));
 

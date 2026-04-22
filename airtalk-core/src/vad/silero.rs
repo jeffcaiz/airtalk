@@ -120,8 +120,7 @@ impl VadFactory for SileroFactory {
         // Already probed at startup. A failure here would indicate
         // process-level corruption (ort DLL unloaded, embedded bytes
         // clobbered) — unrecoverable, panic is the right move.
-        let session =
-            build_session().expect("Silero ONNX re-parse failed after startup probe");
+        let session = build_session().expect("Silero ONNX re-parse failed after startup probe");
         Box::new(SileroEngine::new(session, self.config.clone()))
     }
 }
@@ -150,10 +149,18 @@ fn build_session() -> anyhow::Result<Session> {
             session.outputs.len()
         );
         for (i, input) in session.inputs.iter().enumerate() {
-            log::debug!("  input[{i}]: name={:?} type={:?}", input.name, input.input_type);
+            log::debug!(
+                "  input[{i}]: name={:?} type={:?}",
+                input.name,
+                input.input_type
+            );
         }
         for (i, output) in session.outputs.iter().enumerate() {
-            log::debug!("  output[{i}]: name={:?} type={:?}", output.name, output.output_type);
+            log::debug!(
+                "  output[{i}]: name={:?} type={:?}",
+                output.name,
+                output.output_type
+            );
         }
     });
 
@@ -274,7 +281,10 @@ impl SileroEngine {
                     }
                     samples.extend_from_slice(frame);
                     silence_ms = 0;
-                    self.state_machine = State::Speech { samples, silence_ms };
+                    self.state_machine = State::Speech {
+                        samples,
+                        silence_ms,
+                    };
                     None
                 } else {
                     // Below speech threshold — accumulate trailing silence.
@@ -291,7 +301,10 @@ impl SileroEngine {
                         }
                         seg
                     } else {
-                        self.state_machine = State::Speech { samples, silence_ms };
+                        self.state_machine = State::Speech {
+                            samples,
+                            silence_ms,
+                        };
                         None
                     }
                 }
