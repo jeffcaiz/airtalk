@@ -9,6 +9,14 @@
 //!
 //!   * `--smoke-test`  — spawn core, verify Ready handshake, exit.
 //!   * `--dev-mic [--seconds N]` — timed mic roundtrip (no hotkey).
+//!   * `--debug` — log at `debug` level and force a foreground console
+//!     (allocates one if launched from Explorer / tray / a shortcut).
+//!
+//! For a smooth dev workflow in cmd / PowerShell, prefer launching via
+//! the sibling `airtalk-cli.exe` (see `src/bin/airtalk-cli.rs`). Because
+//! this binary is linked with `windows_subsystem = "windows"`, shells
+//! detach from it immediately and Ctrl+C doesn't route cleanly — the
+//! console-subsystem launcher solves both.
 //!
 //! If started from a terminal (cmd / bash / powershell), logs are
 //! attached to the parent console. Otherwise they go to
@@ -49,12 +57,14 @@ struct Args {
     smoke_test: bool,
     dev_mic: bool,
     seconds: u64,
+    debug: bool,
 }
 
 fn parse_args() -> Args {
     let raw: Vec<String> = std::env::args().collect();
     let smoke_test = raw.iter().any(|a| a == "--smoke-test");
     let dev_mic = raw.iter().any(|a| a == "--dev-mic");
+    let debug = raw.iter().any(|a| a == "--debug");
     let seconds = raw
         .iter()
         .position(|a| a == "--seconds")
@@ -65,6 +75,7 @@ fn parse_args() -> Args {
         smoke_test,
         dev_mic,
         seconds,
+        debug,
     }
 }
 
@@ -81,8 +92,9 @@ async fn main() -> Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    // 2. Route logs before anything else that might log.
-    init_logging();
+    // 2. Parse args, then route logs based on --debug.
+    let args = parse_args();
+    init_logging(args.debug);
 
     // 3. Single-instance — refuse + notify the user if there's already one.
     #[cfg(windows)]
@@ -96,7 +108,7 @@ async fn main() -> Result<()> {
             Err(single_instance::AcquireError::CreateFailed(e)) => {
                 log::warn!("could not create single-instance mutex: {e}; proceeding anyway");
                 // Fall through without a guard — worst case two instances.
-                return run(&parse_args()).await;
+                return run(&args).await;
             }
         }
     };
@@ -105,7 +117,7 @@ async fn main() -> Result<()> {
     // missing, overlay init, hotkey hook denied by antivirus, etc.).
     // Surface any early exit via a message box so silent launch failure
     // doesn't leave the user wondering why nothing happened.
-    if let Err(e) = run(&parse_args()).await {
+    if let Err(e) = run(&args).await {
         log::error!("airtalk fatal: {e:?}");
         #[cfg(windows)]
         show_fatal(&format!("airtalk 启动失败：\n\n{e}"));
@@ -136,15 +148,36 @@ async fn run(args: &Args) -> Result<()> {
 
 // ─── Logging: attached console if we have one, else rolling file ──────
 
-fn init_logging() {
-    let builder =
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
-    let mut builder = builder;
+fn init_logging(debug: bool) {
+    let default_filter = if debug { "debug" } else { "info" };
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(default_filter));
+    // Silence a chatty warning Slint's text pipeline emits every time it
+    // lays out CJK text: icu_segmenter's ChineseOrJapanese bucket asks
+    // for a CJK dictionary that isn't bundled, and icu_provider logs a
+    // `log::warn!("No segmentation model for language: ja")` for each
+    // text node on every relayout. The fallback (per-codepoint split)
+    // is correct for ideographic text, so the warning is pure noise.
+    // Enforce unconditionally so it also applies when users set
+    // RUST_LOG= to something permissive.
+    builder.filter_module("icu_provider", log::LevelFilter::Error);
 
     #[cfg(windows)]
     let console_attached = unsafe {
-        use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
-        AttachConsole(ATTACH_PARENT_PROCESS).is_ok()
+        use windows::Win32::System::Console::{
+            AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS,
+        };
+        // Prefer the parent terminal's console if there is one — typical
+        // when launched from PowerShell/cmd. If that fails and we're in
+        // --debug mode, allocate a fresh console window so the developer
+        // can see logs live even when launched via Explorer or tray.
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_ok() {
+            true
+        } else if debug {
+            AllocConsole().is_ok()
+        } else {
+            false
+        }
     };
     #[cfg(not(windows))]
     let console_attached = true;

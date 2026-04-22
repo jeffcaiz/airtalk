@@ -97,6 +97,41 @@ component PillButton inherits Rectangle {
     }
 }
 
+// Small colored chip that shows whether a secret (API key) is stored.
+// Three states: Saved (green), Will-clear-on-save (amber), Not set (muted).
+component StatusBadge inherits Rectangle {
+    in property <bool> saved;
+    in property <bool> pending-clear;
+
+    property <string> badge-text: (root.saved && root.pending-clear)
+        ? "Will clear on save"
+        : (root.saved ? "Saved" : "Not set");
+    property <color> badge-fg: (root.saved && root.pending-clear)
+        ? #fde68a
+        : (root.saved ? #bbf7d0 : #94a3b8);
+    property <color> badge-bg: (root.saved && root.pending-clear)
+        ? #b45309
+        : (root.saved ? #14532d : #1f2a44);
+
+    height: 22px;
+    horizontal-stretch: 0;
+    border-radius: 11px;
+    background: badge-bg;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        alignment: center;
+        Text {
+            vertical-alignment: center;
+            text: root.badge-text;
+            color: root.badge-fg;
+            font-size: 11px;
+            font-weight: 600;
+        }
+    }
+}
+
 export component SettingsWindow inherits Window {
     in-out property <string> asr-lang;
     in-out property <string> asr-key-input;
@@ -107,14 +142,19 @@ export component SettingsWindow inherits Window {
     in-out property <string> llm-model;
     in-out property <[string]> device-model;
     in-out property <int> device-index;
-    in-out property <string> asr-key-status;
-    in-out property <string> llm-key-status;
+    // Credential Manager doesn't echo secrets back, so the UI can't show
+    // the saved value. Instead we surface a visible badge driven by
+    // these flags: `*-key-saved` comes from the snapshot at open time;
+    // `*-key-pending-clear` is toggled by the Clear button and consumed
+    // by the save flow.
+    in-out property <bool> asr-key-saved;
+    in-out property <bool> asr-key-pending-clear;
+    in-out property <bool> llm-key-saved;
+    in-out property <bool> llm-key-pending-clear;
     in-out property <string> status-text;
 
     callback save-requested();
     callback cancel-requested();
-    callback clear-asr-key();
-    callback clear-llm-key();
 
     width: 720px;
     height: 680px;
@@ -186,18 +226,45 @@ export component SettingsWindow inherits Window {
 
                         VerticalLayout {
                             spacing: 4px;
-                            FieldLabel { text: "DashScope API key"; }
-                            FieldHint { text <=> root.asr-key-status; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                FieldLabel {
+                                    text: "DashScope API key";
+                                    vertical-alignment: center;
+                                }
+                                StatusBadge {
+                                    saved: root.asr-key-saved;
+                                    pending-clear: root.asr-key-pending-clear;
+                                }
+                            }
                             HorizontalLayout {
                                 spacing: 8px;
                                 LineEdit {
                                     horizontal-stretch: 1;
                                     placeholder-text: "sk-…";
-                                    text <=> root.asr-key-input;
+                                    // When a key is safely stored, show a masked
+                                    // placeholder-shaped string and lock the field
+                                    // so the user can't accidentally type over it.
+                                    // The field unlocks (and empties) the moment
+                                    // Clear is clicked.
+                                    text: (root.asr-key-saved && !root.asr-key-pending-clear)
+                                        ? "sk-******"
+                                        : root.asr-key-input;
+                                    enabled: !root.asr-key-saved || root.asr-key-pending-clear;
+                                    edited(value) => {
+                                        root.asr-key-input = value;
+                                    }
                                 }
                                 PillButton {
-                                    text: "Clear";
-                                    clicked => { root.clear-asr-key(); }
+                                    // Toggleable: "Clear" arms the delete, "Undo"
+                                    // cancels it. Only available when there's a
+                                    // saved key to act on.
+                                    text: root.asr-key-pending-clear ? "Undo" : "Clear";
+                                    enabled: root.asr-key-saved;
+                                    clicked => {
+                                        root.asr-key-pending-clear = !root.asr-key-pending-clear;
+                                    }
                                 }
                             }
                         }
@@ -254,20 +321,41 @@ export component SettingsWindow inherits Window {
 
                         VerticalLayout {
                             spacing: 4px;
-                            FieldLabel { text: "API key"; }
-                            FieldHint { text <=> root.llm-key-status; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                alignment: start;
+                                FieldLabel {
+                                    text: "API key";
+                                    vertical-alignment: center;
+                                }
+                                StatusBadge {
+                                    saved: root.llm-key-saved;
+                                    pending-clear: root.llm-key-pending-clear;
+                                }
+                            }
                             HorizontalLayout {
                                 spacing: 8px;
                                 LineEdit {
                                     horizontal-stretch: 1;
                                     placeholder-text: "sk-…";
-                                    text <=> root.llm-key-input;
-                                    enabled: root.llm-enabled;
+                                    text: (root.llm-key-saved && !root.llm-key-pending-clear)
+                                        ? "sk-******"
+                                        : root.llm-key-input;
+                                    // Two gates: the whole cleanup section off →
+                                    // field disabled; a saved key present and not
+                                    // pending-clear → also disabled (protected).
+                                    enabled: root.llm-enabled
+                                        && (!root.llm-key-saved || root.llm-key-pending-clear);
+                                    edited(value) => {
+                                        root.llm-key-input = value;
+                                    }
                                 }
                                 PillButton {
-                                    text: "Clear";
-                                    enabled: root.llm-enabled;
-                                    clicked => { root.clear-llm-key(); }
+                                    text: root.llm-key-pending-clear ? "Undo" : "Clear";
+                                    enabled: root.llm-enabled && root.llm-key-saved;
+                                    clicked => {
+                                        root.llm-key-pending-clear = !root.llm-key-pending-clear;
+                                    }
                                 }
                             }
                         }
@@ -403,19 +491,58 @@ pub enum SettingsEvent {
     Failed(String),
 }
 
+/// Owns the long-lived worker thread that runs every Settings window on
+/// the same OS thread. This is load-bearing: Slint's platform backend
+/// binds to the first thread that touches it, and throws "platform was
+/// initialized in another thread" if a subsequent window appears on a
+/// different one. Spawning per-open (the old design) hit this on the
+/// second open and crashed the settings flow.
 pub struct SettingsBridge {
     events: mpsc::UnboundedReceiver<SettingsEvent>,
-    sender: mpsc::UnboundedSender<SettingsEvent>,
+    open_tx: std::sync::mpsc::Sender<()>,
     is_open: Arc<AtomicBool>,
+    _worker: std::thread::JoinHandle<()>,
 }
 
 impl SettingsBridge {
     pub fn new() -> Self {
-        let (sender, events) = mpsc::unbounded_channel();
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let (open_tx, open_rx) = std::sync::mpsc::channel::<()>();
+        let is_open = Arc::new(AtomicBool::new(false));
+
+        let is_open_worker = is_open.clone();
+        let worker = std::thread::Builder::new()
+            .name("airtalk-settings".into())
+            .spawn(move || {
+                // Park on open_rx; each recv() unparks and drives one
+                // settings window end-to-end on this same thread, so
+                // Slint's per-thread platform state is reused.
+                while open_rx.recv().is_ok() {
+                    let event = match run_settings_window() {
+                        Ok(Some(req)) => match save_request(req).and_then(|_| load_snapshot()) {
+                            Ok(snapshot) => SettingsEvent::Applied(snapshot),
+                            Err(e) => SettingsEvent::Failed(format!("{e:#}")),
+                        },
+                        Ok(None) => SettingsEvent::Cancelled,
+                        Err(e) => SettingsEvent::Failed(format!("{e:#}")),
+                    };
+                    // Release the "open" guard *before* notifying the UI
+                    // so a caller reacting to the event (e.g. reopening
+                    // settings on a validation failure) isn't blocked by
+                    // a stale flag.
+                    is_open_worker.store(false, Ordering::Release);
+                    if event_tx.send(event).is_err() {
+                        break;
+                    }
+                }
+            })
+            .expect("spawn settings thread");
+
         Self {
             events,
-            sender,
-            is_open: Arc::new(AtomicBool::new(false)),
+            open_tx,
+            is_open,
+            _worker: worker,
         }
     }
 
@@ -423,24 +550,10 @@ impl SettingsBridge {
         if self.is_open.swap(true, Ordering::AcqRel) {
             return;
         }
-
-        let sender = self.sender.clone();
-        let is_open = self.is_open.clone();
-        std::thread::Builder::new()
-            .name("airtalk-settings".into())
-            .spawn(move || {
-                let event = match run_settings_window() {
-                    Ok(Some(req)) => match save_request(req).and_then(|_| load_snapshot()) {
-                        Ok(snapshot) => SettingsEvent::Applied(snapshot),
-                        Err(e) => SettingsEvent::Failed(format!("{e:#}")),
-                    },
-                    Ok(None) => SettingsEvent::Cancelled,
-                    Err(e) => SettingsEvent::Failed(format!("{e:#}")),
-                };
-                let _ = sender.send(event);
-                is_open.store(false, Ordering::Release);
-            })
-            .expect("spawn settings thread");
+        if self.open_tx.send(()).is_err() {
+            // Worker died — release the flag so callers don't get wedged.
+            self.is_open.store(false, Ordering::Release);
+        }
     }
 
     pub async fn recv(&mut self) -> Option<SettingsEvent> {
@@ -705,13 +818,13 @@ fn run_settings_window() -> Result<Option<SaveRequest>> {
     window.set_llm_enabled(snapshot.config.llm.enabled);
     window.set_llm_base_url(snapshot.config.llm.base_url.clone().into());
     window.set_llm_model(snapshot.config.llm.model.clone().into());
-    window.set_asr_key_status(key_status(snapshot.asr_key_saved).into());
-    window.set_llm_key_status(key_status(snapshot.llm_key_saved).into());
+    window.set_asr_key_saved(snapshot.asr_key_saved);
+    window.set_asr_key_pending_clear(false);
+    window.set_llm_key_saved(snapshot.llm_key_saved);
+    window.set_llm_key_pending_clear(false);
     window.set_status_text("".into());
 
     let save_flag = Arc::new(AtomicBool::new(false));
-    let clear_asr_flag = Arc::new(AtomicBool::new(false));
-    let clear_llm_flag = Arc::new(AtomicBool::new(false));
 
     {
         let weak = weak.clone();
@@ -738,26 +851,6 @@ fn run_settings_window() -> Result<Option<SaveRequest>> {
             let _ = window.hide();
         });
     }
-    {
-        let weak = weak.clone();
-        let clear_asr_flag = clear_asr_flag.clone();
-        window.on_clear_asr_key(move || {
-            clear_asr_flag.store(true, Ordering::Release);
-            if let Some(window) = weak.upgrade() {
-                window.set_asr_key_status("Saved key will be cleared on save.".into());
-            }
-        });
-    }
-    {
-        let weak = weak.clone();
-        let clear_llm_flag = clear_llm_flag.clone();
-        window.on_clear_llm_key(move || {
-            clear_llm_flag.store(true, Ordering::Release);
-            if let Some(window) = weak.upgrade() {
-                window.set_llm_key_status("Saved key will be cleared on save.".into());
-            }
-        });
-    }
 
     window.run().map_err(|e| anyhow!(e.to_string()))?;
     if !save_flag.load(Ordering::Acquire) {
@@ -779,14 +872,29 @@ fn run_settings_window() -> Result<Option<SaveRequest>> {
         },
     };
 
-    let new_asr_key = optional_secret(window.get_asr_key_input().to_string());
-    let new_llm_key = optional_secret(window.get_llm_key_input().to_string());
+    // `*-key-input` can carry stale text the user typed before clicking
+    // Undo (Slint has no concept of "input is locked" beyond visual
+    // disable — the stored string hangs around). Honor the UI state:
+    // if the key is currently saved AND not pending-clear, the field
+    // was locked, so any buffered text should be ignored.
+    let asr_key_locked = snapshot.asr_key_saved && !window.get_asr_key_pending_clear();
+    let new_asr_key = if asr_key_locked {
+        None
+    } else {
+        optional_secret(window.get_asr_key_input().to_string())
+    };
+    let llm_key_locked = snapshot.llm_key_saved && !window.get_llm_key_pending_clear();
+    let new_llm_key = if llm_key_locked {
+        None
+    } else {
+        optional_secret(window.get_llm_key_input().to_string())
+    };
     Ok(Some(SaveRequest {
         config,
         new_asr_key,
-        clear_asr_key: clear_asr_flag.load(Ordering::Acquire),
+        clear_asr_key: window.get_asr_key_pending_clear(),
         new_llm_key,
-        clear_llm_key: clear_llm_flag.load(Ordering::Acquire),
+        clear_llm_key: window.get_llm_key_pending_clear(),
     }))
 }
 
@@ -807,14 +915,6 @@ fn optional_secret(raw: String) -> Option<String> {
         None
     } else {
         Some(trimmed)
-    }
-}
-
-fn key_status(saved: bool) -> &'static str {
-    if saved {
-        "A key is already saved. Leave the field blank to keep it."
-    } else {
-        "No key saved yet."
     }
 }
 

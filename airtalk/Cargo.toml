@@ -20,6 +20,13 @@ toml = { workspace = true }
 cpal = "0.15"
 tiny-skia = "0.11"
 slint = "1.8"
+# Not used directly — we depend on this purely to enable the `logging`
+# feature so Slint's transitive use of icu_provider routes its warnings
+# through the `log` crate (instead of raw `eprintln!` stderr prints in
+# debug builds). Lets `init_logging`'s filter silence the CJK segmenter
+# "No segmentation model for language: ja" spam that fires once per text
+# relayout while the Settings window is open.
+icu_provider = { version = "2.2", default-features = false, features = ["logging"] }
 
 # TODO: pull in as UI components land.
 # tray-icon = "0.19"      # or a lower-level Shell_NotifyIcon wrapper
