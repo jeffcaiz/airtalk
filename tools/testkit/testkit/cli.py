@@ -111,7 +111,42 @@ def main() -> None:
         "--save", help="save the recorded WAV to this path for replay"
     )
 
+    p_lab = sub.add_parser(
+        "promptlab",
+        help="Run cleanup LLM against a fixture of raw texts and a prompt file",
+    )
+    p_lab.add_argument("--prompt", required=True, help="path to system prompt file")
+    p_lab.add_argument("--cases", required=True, help="YAML file of cleanup cases")
+    p_lab.add_argument(
+        "--llm-base-url",
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    )
+    p_lab.add_argument("--llm-model", default="qwen-flash")
+    p_lab.add_argument("--timeout-s", type=float, default=30.0)
+    p_lab.add_argument(
+        "--only",
+        action="append",
+        help="run only this case (by name); repeatable",
+    )
+
     args = parser.parse_args()
+
+    # promptlab doesn't need the core binary — it talks to the LLM
+    # provider directly. Dispatch before the core_bin check.
+    if args.cmd == "promptlab":
+        from .promptlab import promptlab
+
+        exit_code = asyncio.run(
+            promptlab(
+                prompt_path=Path(args.prompt),
+                cases_path=Path(args.cases),
+                base_url=args.llm_base_url,
+                model=args.llm_model,
+                timeout_s=args.timeout_s,
+                only=args.only,
+            )
+        )
+        sys.exit(exit_code)
 
     core_bin = Path(args.core_bin)
     if not core_bin.is_file():

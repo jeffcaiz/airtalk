@@ -1,0 +1,33 @@
+# Cleanup-LLM regression fixtures.
+#
+# Each case is a real (or realistic) ASR-raw string plus assertions
+# about what the cleanup LLM should and should not do to it. Add a
+# new case whenever you catch the LLM misbehaving so the same mistake
+# can't regress silently.
+#
+# Fields:
+#   name             — unique id (used with `--only`)
+#   raw              — the ASR-raw text fed to the LLM (as `user` message)
+#   must_contain     — substrings that MUST appear in the cleaned output
+#   must_not_contain — substrings that MUST NOT appear
+#   note             — free-form reminder of what this case is testing
+#
+# Run: uv run python -m testkit promptlab \
+#        --prompt airtalk-core/src/default_prompt.txt \
+#        --cases tools/testkit/cleanup_cases.yaml
+
+- name: mixed_zh_en_setting
+  note: >
+    Mixed Chinese+English. LLM tends to (a) translate the English word,
+    (b) swap 譬如说→比如 (synonym rewrite), (c) reorder "很困难的"→"就很困难".
+    Only fillers (啊, 呃) and punctuation should change.
+  raw: "我们先试一下啊，混杂的情况，譬如说呃，在香港，setting界面是很困难的。"
+  must_contain:
+    - "setting"
+    - "譬如说"
+    - "香港"
+  must_not_contain:
+    - "设置"
+    - "比如"
+    - "呃"
+    - "啊，混"
