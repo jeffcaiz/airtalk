@@ -25,7 +25,12 @@ serde = { workspace = true }
 toml = { workspace = true }
 cpal = "0.15"
 tiny-skia = "0.11"
-slint = "1.8"
+# `raw-window-handle-06` feature: lets us pull the native HWND out of a
+# Slint Window so we can apply WS_EX_NOACTIVATE / SWP_NOACTIVATE /
+# monitor-anchor positioning that Slint doesn't expose natively. Used by
+# the Recovery popup.
+slint = { version = "1.8", features = ["raw-window-handle-06"] }
+raw-window-handle = "0.6"
 # Not used directly — we depend on this purely to enable the `logging`
 # feature so Slint's transitive use of icu_provider routes its warnings
 # through the `log` crate (instead of raw `eprintln!` stderr prints in

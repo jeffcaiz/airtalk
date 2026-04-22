@@ -34,10 +34,13 @@ mod hotkey;
 mod overlay;
 mod paste;
 mod paths;
-mod recovery;
 mod settings;
 #[cfg(windows)]
 mod single_instance;
+#[cfg(windows)]
+mod slint_bridge;
+#[cfg(windows)]
+mod slint_ui;
 mod tray;
 
 use anyhow::{Context, Result};
@@ -48,8 +51,8 @@ use audio::AudioCapture;
 use core_client::CoreClient;
 use hotkey::{Hotkey, HotkeyEvent};
 use overlay::{Overlay, OverlayState};
-use recovery::{Recovery, RecoveryEvent};
-use settings::{SettingsBridge, SettingsEvent};
+use settings::SettingsEvent;
+use slint_bridge::{RecoveryEvent, SlintBridge};
 use tray::{Tray, TrayEvent};
 
 #[cfg(windows)]
@@ -58,8 +61,19 @@ const SINGLE_INSTANCE_MUTEX: &str = "Local\\airtalk-singleton-v1";
 struct Args {
     smoke_test: bool,
     dev_mic: bool,
+    dev_recovery: bool,
+    recovery_text: Option<String>,
     seconds: u64,
     debug: bool,
+}
+
+impl Args {
+    /// True if any dev-only mode is active. These short-lived modes
+    /// bypass the single-instance guard so they can run alongside a
+    /// normal airtalk instance during testing.
+    fn is_dev_mode(&self) -> bool {
+        self.smoke_test || self.dev_mic || self.dev_recovery
+    }
 }
 
 fn print_help() {
@@ -68,18 +82,21 @@ fn print_help() {
     println!("Usage: airtalk [OPTIONS]");
     println!();
     println!("Options:");
-    println!("  --debug         Log at debug level, force a foreground console");
-    println!("  --smoke-test    Spawn core, verify Ready handshake, exit");
-    println!("  --dev-mic       Timed mic roundtrip (developer)");
-    println!("  --seconds N     Duration for --dev-mic (default 3)");
-    println!("  -V, --version   Print version and exit");
-    println!("  -h, --help      Show this help");
+    println!("  --debug           Log at debug level, force a foreground console");
+    println!("  --smoke-test      Spawn core, verify Ready handshake, exit");
+    println!("  --dev-mic         Timed mic roundtrip (developer)");
+    println!("  --seconds N       Duration for --dev-mic (default 3)");
+    println!("  --dev-recovery    Show the recovery popup with sample text, exit on dismiss");
+    println!("  --text <string>   Override the --dev-recovery body text");
+    println!("  -V, --version     Print version and exit");
+    println!("  -h, --help        Show this help");
 }
 
 fn parse_args() -> Args {
     let raw: Vec<String> = std::env::args().collect();
     let smoke_test = raw.iter().any(|a| a == "--smoke-test");
     let dev_mic = raw.iter().any(|a| a == "--dev-mic");
+    let dev_recovery = raw.iter().any(|a| a == "--dev-recovery");
     let debug = raw.iter().any(|a| a == "--debug");
     let seconds = raw
         .iter()
@@ -87,9 +104,16 @@ fn parse_args() -> Args {
         .and_then(|i| raw.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(3);
+    let recovery_text = raw
+        .iter()
+        .position(|a| a == "--text")
+        .and_then(|i| raw.get(i + 1))
+        .cloned();
     Args {
         smoke_test,
         dev_mic,
+        dev_recovery,
+        recovery_text,
         seconds,
         debug,
     }
@@ -126,10 +150,14 @@ async fn main() -> Result<()> {
     init_logging(args.debug);
 
     // 3. Single-instance — refuse + notify the user if there's already one.
+    //    Dev modes (--smoke-test / --dev-mic / --dev-recovery) bypass
+    //    this so they can run alongside a normal airtalk for testing.
     #[cfg(windows)]
-    let _single_guard = {
+    let _single_guard = if args.is_dev_mode() {
+        None
+    } else {
         match single_instance::SingleInstance::acquire(SINGLE_INSTANCE_MUTEX) {
-            Ok(guard) => guard,
+            Ok(guard) => Some(guard),
             Err(single_instance::AcquireError::AlreadyRunning(_)) => {
                 show_info("airtalk 已经在运行。\n\n请到任务栏右下角找到托盘图标使用。");
                 return Ok(());
@@ -137,7 +165,7 @@ async fn main() -> Result<()> {
             Err(single_instance::AcquireError::CreateFailed(e)) => {
                 log::warn!("could not create single-instance mutex: {e}; proceeding anyway");
                 // Fall through without a guard — worst case two instances.
-                return run(&args).await;
+                None
             }
         }
     };
@@ -167,6 +195,8 @@ async fn run(args: &Args) -> Result<()> {
         let client = spawn_core_from_settings().await?;
         run_dev_mic_timed(&client, args.seconds).await?;
         client.shutdown().await?;
+    } else if args.dev_recovery {
+        run_dev_recovery(args.recovery_text.clone()).await?;
     } else {
         run_hotkey_loop().await?;
     }
@@ -335,6 +365,44 @@ async fn run_dev_mic_timed(client: &CoreClient, seconds: u64) -> Result<()> {
     }
 }
 
+/// Dev-only: pop the recovery window with sample text, wait for the
+/// user to click 复制 / Dismiss / press Esc, print what happened, exit.
+/// Bypasses single-instance so it can be run while a normal airtalk
+/// is live — handy for smoke-testing the popup's focus, positioning,
+/// topmost behavior, and scroll overflow.
+#[cfg(windows)]
+async fn run_dev_recovery(custom: Option<String>) -> Result<()> {
+    let text = custom.unwrap_or_else(|| {
+        // Mix short + long + CJK/Latin + hard line to exercise wrap,
+        // scroll overflow, and font handling.
+        "我们先试一下啊，混杂的情况，譬如说呃，在香港，setting 界面是很困难的。\n\n\
+        接下来是更长的一段测试文本，用来验证 recovery 窗口的滚动行为和 word-wrap: \
+        今天下午我们讨论了 React 的 useState hook 在 SSR 场景下的若干坑位，\
+        尤其是 useEffect 在 hydration 阶段的执行时机问题。关键是 setState 触发的 \
+        re-render 与 Suspense 的边界之间如何协作。\n\n\
+        This is a long English paragraph meant to verify word wrap on Latin text \
+        at the declared 440px window width, which should be perfectly readable \
+        without horizontal scrollbars. If you see horizontal clipping, wrap is broken.\n\n\
+        最后一行短文本。"
+            .to_string()
+    });
+
+    let (slint, mut slint_events) = slint_bridge::SlintBridge::new();
+    slint.show_recovery(text);
+
+    log::info!("dev-recovery: waiting for dismiss (× / Dismiss / Esc / 复制)…");
+    match slint_events.recovery.recv().await {
+        Some(slint_bridge::RecoveryEvent::Copied) => {
+            log::info!("dev-recovery: Copied — clipboard now holds the text");
+        }
+        Some(slint_bridge::RecoveryEvent::Dismissed) => {
+            log::info!("dev-recovery: Dismissed");
+        }
+        None => anyhow::bail!("recovery channel closed without an event"),
+    }
+    Ok(())
+}
+
 /// Default runtime. Tray icon + overlay + hotkey; transcribed text is
 /// pasted into the focused window. Exits on tray Quit or Ctrl-C.
 async fn run_hotkey_loop() -> Result<()> {
@@ -344,15 +412,14 @@ async fn run_hotkey_loop() -> Result<()> {
     let overlay = Overlay::start(audio.level_source())?;
     let mut hotkey = Hotkey::start(hotkey::Config::default())?;
     let mut tray = Tray::start(current_mic.clone())?;
-    let mut recovery = Recovery::start()?;
-    let mut settings_ui = SettingsBridge::new();
+    let (slint, mut slint_events) = SlintBridge::new();
     log::info!("mic: \"{}\"", audio.device_name());
 
     let mut client = match spawn_core_from_settings().await {
         Ok(client) => Some(client),
         Err(e) => {
             log::warn!("core unavailable at startup: {e:#}");
-            settings_ui.open();
+            slint.open_settings();
             None
         }
     };
@@ -387,7 +454,7 @@ async fn run_hotkey_loop() -> Result<()> {
                     }
                     Some(TrayEvent::OpenSettings) => {
                         log::info!("tray: Settings requested");
-                        settings_ui.open();
+                        slint.open_settings();
                     }
                     Some(TrayEvent::SelectMicrophone(choice)) => {
                         log::info!("tray: switch mic → {choice:?}");
@@ -420,7 +487,7 @@ async fn run_hotkey_loop() -> Result<()> {
                     None => anyhow::bail!("audio thread died"),
                 }
             }
-            rec_ev = recovery.recv() => {
+            rec_ev = slint_events.recovery.recv() => {
                 match rec_ev {
                     Some(RecoveryEvent::Copied) => log::info!("recovery: copied"),
                     Some(RecoveryEvent::Dismissed) => log::info!("recovery: dismissed"),
@@ -432,12 +499,12 @@ async fn run_hotkey_loop() -> Result<()> {
                     Some(HotkeyEvent::Press) => {
                         if client.is_none() {
                             overlay.set_state(OverlayState::Error);
-                            settings_ui.open();
+                            slint.open_settings();
                             continue;
                         }
                         // Any previous recovery popup is implicitly answered
                         // by the user starting a new session — dismiss it.
-                        recovery.hide();
+                        slint.hide_recovery();
                         if let Some(old) = current_session.take() {
                             log::warn!("Press during session {old} — superseding");
                             audio.close_gate();
@@ -483,7 +550,7 @@ async fn run_hotkey_loop() -> Result<()> {
                         // responding. On failure, hand the text off to the
                         // recovery popup so the user can still recover it.
                         let text_to_paste = text.clone();
-                        let recovery_handle = recovery.handle();
+                        let recovery_handle = slint.recovery_handle();
                         tokio::task::spawn_blocking(move || {
                             match paste::paste(&text_to_paste, &paste::Config::default()) {
                                 Ok(_) => {}
@@ -510,7 +577,7 @@ async fn run_hotkey_loop() -> Result<()> {
                     None => anyhow::bail!("core closed unexpectedly"),
                 }
             }
-            settings_ev = settings_ui.recv() => {
+            settings_ev = slint_events.settings.recv() => {
                 match settings_ev {
                     Some(SettingsEvent::Applied(snapshot)) => {
                         let desired_mic = settings::audio_choice_from_config(&snapshot.config);
