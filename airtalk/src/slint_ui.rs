@@ -209,7 +209,7 @@ export component SettingsWindow inherits Window {
                                 spacing: 2px;
                                 SectionTitle { text: "Startup"; }
                                 SectionHint {
-                                    text: "Start airtalk automatically when you sign in to Windows.";
+                                    text: "Start AirTalk automatically when you sign in to Windows.";
                                 }
                             }
                             CheckBox {
@@ -539,7 +539,7 @@ export component RecoveryWindow inherits Window {
     height: 280px;
     no-frame: true;
     always-on-top: true;
-    title: "airtalk — paste failed";
+    title: "AirTalk — paste failed";
     background: #0a1020;
     default-font-size: 13px;
     // Route keyboard input to the FocusScope below so Esc works as

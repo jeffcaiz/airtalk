@@ -1,4 +1,4 @@
-# airtalk
+# AirTalk · 空·谈
 
 Windows voice input tool. Hold a hotkey, speak, release — your cleaned-up
 text is pasted into the focused app.
@@ -29,7 +29,7 @@ SmartScreen will show "Windows protected your PC" on first launch —
 click **More info → Run anyway**. The warning goes away after Windows
 learns the binary.
 
-On first launch airtalk opens Settings and asks for your DashScope API
+On first launch AirTalk opens Settings and asks for your DashScope API
 key. Get one at [dashscope.console.aliyun.com](https://dashscope.console.aliyun.com/).
 
 ## Status

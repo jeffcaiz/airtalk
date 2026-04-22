@@ -77,7 +77,7 @@ impl Args {
 }
 
 fn print_help() {
-    println!("airtalk {} — voice input for Windows", env!("CARGO_PKG_VERSION"));
+    println!("AirTalk {} — voice input for Windows", env!("CARGO_PKG_VERSION"));
     println!();
     println!("Usage: airtalk [OPTIONS]");
     println!();
@@ -126,7 +126,7 @@ async fn main() -> Result<()> {
     //    get tangled up in single-instance or logging init.
     let raw: Vec<String> = std::env::args().collect();
     if raw.iter().any(|a| a == "--version" || a == "-V") {
-        println!("airtalk {}", env!("CARGO_PKG_VERSION"));
+        println!("AirTalk {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if raw.iter().any(|a| a == "--help" || a == "-h") {
@@ -159,7 +159,7 @@ async fn main() -> Result<()> {
         match single_instance::SingleInstance::acquire(SINGLE_INSTANCE_MUTEX) {
             Ok(guard) => Some(guard),
             Err(single_instance::AcquireError::AlreadyRunning(_)) => {
-                show_info("airtalk 已经在运行。\n\n请到任务栏右下角找到托盘图标使用。");
+                show_info("AirTalk 已经在运行。\n\n请到任务栏右下角找到托盘图标使用。");
                 return Ok(());
             }
             Err(single_instance::AcquireError::CreateFailed(e)) => {
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     if let Err(e) = run(&args).await {
         log::error!("airtalk fatal: {e:?}");
         #[cfg(windows)]
-        show_fatal(&format!("airtalk 启动失败：\n\n{e}"));
+        show_fatal(&format!("AirTalk 启动失败：\n\n{e}"));
     }
     Ok(())
 }
@@ -302,7 +302,7 @@ fn show_msgbox(msg: &str, is_error: bool) {
         let _ = MessageBoxW(
             None,
             PCWSTR(wide.as_ptr()),
-            w!("空·谈 · airtalk"),
+            w!("AirTalk · 空·谈"),
             MB_OK | icon | MB_SETFOREGROUND,
         );
     }
