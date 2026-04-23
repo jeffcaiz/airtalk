@@ -15,9 +15,9 @@
 //!
 //! * `wav`             — WAV
 //! * `opus`            — Opus @ 24 kbps (default)
-//! * `opus:<bitrate>`  — Opus at a specific bitrate. Bitrate may be
-//!                       `16k` / `24k` / `32k` (suffix = *1000) or a
-//!                       literal integer like `24000` (bits per second).
+//! * `opus:<bitrate>` — Opus at a specific bitrate. Bitrate may be
+//!   `16k` / `24k` / `32k` (suffix = *1000) or a literal integer like
+//!   `24000` (bits per second).
 //!
 //! # Opus / Ogg layout
 //!
@@ -37,7 +37,7 @@
 
 use std::str::FromStr;
 
-use anyhow::{bail, Context};
+use anyhow::{bail, Context, Result};
 use audiopus::coder::Encoder;
 use audiopus::{Application, Bitrate, Channels, SampleRate};
 
@@ -183,16 +183,13 @@ fn pcm16_to_opus_ogg_16k_mono(pcm: &[u8], bitrate_bps: i32) -> anyhow::Result<Ve
     let lookahead_16k = encoder
         .lookahead()
         .context("querying Opus encoder lookahead")?;
-    let pre_skip_48k: u16 = (lookahead_16k.max(0) as u32)
-        .saturating_mul(3)
-        .min(u16::MAX as u32) as u16;
+    let pre_skip_48k: u16 = lookahead_16k.saturating_mul(3).min(u16::MAX as u32) as u16;
 
     // Encode in 20 ms frames. The final frame is zero-padded if the
     // PCM length isn't a multiple of 320 samples.
     let mut encoded_packets: Vec<Vec<u8>> = Vec::new();
     let mut out_buf = vec![0u8; 4000];
-    let mut iter = samples.chunks(OPUS_FRAME_SAMPLES_16K);
-    while let Some(frame) = iter.next() {
+    for frame in samples.chunks(OPUS_FRAME_SAMPLES_16K) {
         let n = if frame.len() == OPUS_FRAME_SAMPLES_16K {
             encoder
                 .encode(frame, &mut out_buf)
@@ -214,18 +211,18 @@ fn pcm16_to_opus_ogg_16k_mono(pcm: &[u8], bitrate_bps: i32) -> anyhow::Result<Ve
 
     // Page 0: OpusHead (BOS).
     let head = build_opus_head(pre_skip_48k);
-    write_ogg_page(&mut ogg, OggHeader::Bos, 0, serial, seq, &[&head]);
+    write_ogg_page(&mut ogg, OggHeader::Bos, 0, serial, seq, &[&head])?;
     seq += 1;
 
     // Page 1: OpusTags.
     let tags = build_opus_tags();
-    write_ogg_page(&mut ogg, OggHeader::Normal, 0, serial, seq, &[&tags]);
+    write_ogg_page(&mut ogg, OggHeader::Normal, 0, serial, seq, &[&tags])?;
     seq += 1;
 
     // Pages 2..: audio packets.
     if encoded_packets.is_empty() {
         // No audio — still need an EOS page to terminate the stream.
-        write_ogg_page(&mut ogg, OggHeader::Eos, 0, serial, seq, &[]);
+        write_ogg_page(&mut ogg, OggHeader::Eos, 0, serial, seq, &[])?;
     } else {
         let total_chunks = encoded_packets.chunks(PACKETS_PER_PAGE).count();
         let mut granule_48k: u64 = 0;
@@ -237,7 +234,7 @@ fn pcm16_to_opus_ogg_16k_mono(pcm: &[u8], bitrate_bps: i32) -> anyhow::Result<Ve
                 OggHeader::Normal
             };
             let refs: Vec<&[u8]> = packets.iter().map(|p| p.as_slice()).collect();
-            write_ogg_page(&mut ogg, header, granule_48k, serial, seq, &refs);
+            write_ogg_page(&mut ogg, header, granule_48k, serial, seq, &refs)?;
             seq += 1;
         }
     }
@@ -288,20 +285,18 @@ fn write_ogg_page(
     serial: u32,
     seq: u32,
     packets: &[&[u8]],
-) {
+) -> Result<()> {
     let mut segments: Vec<u8> = Vec::new();
     for packet in packets {
         let size = packet.len();
         let full = size / 255;
         let remainder = size % 255;
-        for _ in 0..full {
-            segments.push(255);
-        }
+        segments.extend(std::iter::repeat_n(255, full));
         // Always emit the remainder byte (0 if packet size is a
         // multiple of 255) — Ogg requires an explicit terminator.
         segments.push(remainder as u8);
     }
-    assert!(
+    anyhow::ensure!(
         segments.len() <= 255,
         "ogg page has >255 segments ({}); caller must split packets across pages",
         segments.len()
@@ -324,6 +319,7 @@ fn write_ogg_page(
 
     let crc = OGG_CRC.checksum(&out[page_start..]);
     out[crc_offset..crc_offset + 4].copy_from_slice(&crc.to_le_bytes());
+    Ok(())
 }
 
 /// Derive a u32 stream serial number. Only needs to be unique within

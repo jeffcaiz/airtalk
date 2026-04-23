@@ -24,6 +24,7 @@ const CORE_BIN: &str = env!("CARGO_BIN_EXE_airtalk-core");
 /// Wall-clock deadline on any single recv / exit wait. Generous to
 /// absorb CI jitter; individual tests assert more specific timings.
 const DEADLINE: Duration = Duration::from_secs(30);
+const MAX_SINGLE_UTTERANCE_PCM_BYTES: usize = 5 * 60 * 16_000 * 2;
 
 const ASR_PATH: &str = "/api/v1/services/aigc/multimodal-generation/generation";
 const LLM_PATH: &str = "/chat/completions";
@@ -248,6 +249,21 @@ async fn no_audio_without_chunks() {
     core.send(&begin(1, false)).await;
     core.send(&Request::End { id: 1 }).await;
     assert_error(&core.recv().await, 1, "no_audio");
+    core.expect_clean_exit().await;
+}
+
+#[tokio::test]
+async fn vad_false_rejects_oversize_audio_before_asr() {
+    let mut core = spawn_no_llm();
+    core.recv_ready().await;
+
+    core.send(&begin(1, false)).await;
+    core.send(&chunk(1, MAX_SINGLE_UTTERANCE_PCM_BYTES / 2))
+        .await;
+    core.send(&chunk(1, MAX_SINGLE_UTTERANCE_PCM_BYTES / 2 + 1))
+        .await;
+
+    assert_error(&core.recv().await, 1, "audio_too_large");
     core.expect_clean_exit().await;
 }
 

@@ -8,6 +8,7 @@ mod config;
 mod llm;
 mod prompt;
 mod session;
+mod util;
 mod vad;
 
 use std::path::PathBuf;
@@ -26,7 +27,7 @@ use tokio::sync::mpsc;
 use crate::asr::audio::AudioFormat;
 use crate::config::CoreConfig;
 
-#[derive(Parser, Debug)]
+#[derive(Parser)]
 #[command(name = "airtalk-core", version, about = "airtalk core process")]
 struct Cli {
     // ─── ASR ──────────────────────────────────────────────────────────

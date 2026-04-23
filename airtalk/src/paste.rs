@@ -28,7 +28,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
-use windows::Win32::Foundation::{HANDLE, HGLOBAL};
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
 };
@@ -177,14 +177,17 @@ fn write_clipboard_unicode(text: &str, config: &Config) -> Result<()> {
         let hmem = GlobalAlloc(GMEM_MOVEABLE, bytes).context("GlobalAlloc")?;
         let dst = GlobalLock(hmem) as *mut u16;
         if dst.is_null() {
+            let _ = GlobalFree(Some(hmem));
             bail!("GlobalLock returned null");
         }
         std::ptr::copy_nonoverlapping(utf16.as_ptr(), dst, utf16.len());
         let _ = GlobalUnlock(hmem);
         // On success, the system takes ownership of the HGLOBAL — we
         // must NOT free it.
-        SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hmem.0)))
-            .context("SetClipboardData")?;
+        if let Err(e) = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(hmem.0))) {
+            let _ = GlobalFree(Some(hmem));
+            return Err(anyhow::Error::from(e).context("SetClipboardData"));
+        }
         Ok::<(), anyhow::Error>(())
     };
     let _ = unsafe { CloseClipboard() };

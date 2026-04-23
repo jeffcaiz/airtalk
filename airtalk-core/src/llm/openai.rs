@@ -38,6 +38,7 @@ use serde_json::{json, Map, Value};
 use airtalk_proto::LlmUsage;
 
 use super::{LlmOutput, LlmProvider};
+use crate::util::{redact_api_key, truncate};
 
 pub struct OpenAiConfig {
     pub base_url: String,
@@ -146,11 +147,19 @@ impl LlmProvider for OpenAiLlm {
         let status = resp.status();
         let body_text = resp.text().await.context("reading LLM response body")?;
         if !status.is_success() {
-            anyhow::bail!("HTTP {}: {}", status.as_u16(), truncate(&body_text, 500));
+            anyhow::bail!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                truncate(&redact_api_key(&body_text, &self.config.api_key), 500)
+            );
         }
 
-        let parsed: ChatResponse = serde_json::from_str(&body_text)
-            .with_context(|| format!("parsing LLM response: {}", truncate(&body_text, 500)))?;
+        let parsed: ChatResponse = serde_json::from_str(&body_text).with_context(|| {
+            format!(
+                "parsing LLM response: {}",
+                truncate(&redact_api_key(&body_text, &self.config.api_key), 500)
+            )
+        })?;
         let usage = parsed.usage.map(ChatUsage::into_proto);
         let cleaned = parsed
             .choices
@@ -168,18 +177,5 @@ impl LlmProvider for OpenAiLlm {
             text: cleaned,
             usage,
         })
-    }
-}
-
-/// Truncate to at most `max_chars` characters, appending an ellipsis
-/// marker when cut. Used to bound error-context strings so a huge
-/// HTML error page or runaway response doesn't blow up logs.
-fn truncate(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…[truncated]")
-    } else {
-        head
     }
 }

@@ -18,9 +18,8 @@ Download the latest installer from the
 
 - **`airtalk-vX.Y.Z-x86_64-windows-setup.exe`** — standard installer.
   Optional "Launch at Startup" task is checked by default; creates
-  Start Menu entries; uninstaller leaves `%APPDATA%\airtalk\` and saved
-  API keys (Credential Manager) in place so a reinstall picks up where
-  you left off.
+  Start Menu entries; uninstaller removes `%APPDATA%\airtalk\` and saved
+  API keys from Credential Manager.
 - **`airtalk-vX.Y.Z-x86_64-pc-windows-msvc.zip`** — portable build if you
   prefer no installer. Extract anywhere and run `airtalk.exe`.
 

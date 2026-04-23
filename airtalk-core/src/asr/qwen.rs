@@ -50,6 +50,7 @@ use serde_json::{json, Map, Value};
 
 use super::audio::AudioFormat;
 use super::{AsrOutput, AsrProvider, AsrRequest};
+use crate::util::{redact_api_key, truncate};
 
 const MODEL: &str = "qwen3-asr-flash";
 
@@ -278,18 +279,26 @@ impl AsrProvider for QwenAsr {
         let status = resp.status();
         let body_text = resp.text().await.context("reading ASR response body")?;
         if !status.is_success() {
-            anyhow::bail!("HTTP {}: {}", status.as_u16(), truncate(&body_text, 500));
+            anyhow::bail!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                truncate(&redact_api_key(&body_text, &self.api_key), 500)
+            );
         }
 
-        let parsed: DashScopeResponse = serde_json::from_str(&body_text)
-            .with_context(|| format!("parsing ASR response: {}", truncate(&body_text, 500)))?;
+        let parsed: DashScopeResponse = serde_json::from_str(&body_text).with_context(|| {
+            format!(
+                "parsing ASR response: {}",
+                truncate(&redact_api_key(&body_text, &self.api_key), 500)
+            )
+        })?;
 
         // DashScope sometimes returns 200 with an error `code` in the
         // body. Defensive: treat any non-empty `code` as failure.
         if let Some(code) = parsed.code.as_deref() {
             if !code.is_empty() {
                 let msg = parsed.message.unwrap_or_default();
-                anyhow::bail!("DashScope {code}: {msg}");
+                anyhow::bail!("DashScope {code}: {}", redact_api_key(&msg, &self.api_key));
             }
         }
 
@@ -343,16 +352,6 @@ fn extract_text(content: &Value) -> Option<String> {
         return (!trimmed.is_empty()).then(|| trimmed.to_string());
     }
     None
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    let mut chars = s.chars();
-    let head: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{head}…[truncated]")
-    } else {
-        head
-    }
 }
 
 #[cfg(test)]

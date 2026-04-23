@@ -54,5 +54,12 @@ Name: "{autodesktop}\AirTalk"; Filename: "{app}\airtalk.exe"; IconFilename: "{ap
 ; installer checkbox would write to different entries.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "airtalk"; ValueData: """{app}\airtalk.exe"""; Flags: uninsdeletevalue; Tasks: autostart
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{userappdata}\airtalk"
+
+[UninstallRun]
+Filename: "{cmd}"; Parameters: "/C cmdkey /delete:airtalk/asr_api_key >NUL 2>NUL"; Flags: runhidden
+Filename: "{cmd}"; Parameters: "/C cmdkey /delete:airtalk/llm_api_key >NUL 2>NUL"; Flags: runhidden
+
 [Run]
 Filename: "{app}\airtalk.exe"; Description: "Launch AirTalk"; Flags: nowait postinstall skipifsilent

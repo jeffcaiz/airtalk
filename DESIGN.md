@@ -340,10 +340,10 @@ v5 ONNX, input shape `[1, 512]` f32 (32 ms @ 16 kHz), LSTM state
 `[2, 1, 128]`, plus a scalar sample-rate tensor. Output: single
 speech probability in `[0, 1]`.
 
-The file is **not committed**. See `airtalk-core/assets/README.md`
-for the download URL. It is embedded at compile time via
-`include_bytes!`, so the shipped binary is self-contained — but the
-source tree must have the file present to build.
+The file is committed under `airtalk-core/assets/`. See
+`airtalk-core/assets/README.md` for provenance and refresh steps. It is
+embedded at compile time via `include_bytes!`, so the shipped binary is
+self-contained.
 
 `build.rs` sets `cargo:rerun-if-changed=assets/silero_vad.onnx` so
 swapping the model triggers a rebuild.

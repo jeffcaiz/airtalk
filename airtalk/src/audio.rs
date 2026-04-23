@@ -25,9 +25,9 @@
 //!        - SwitchDevice → drop stream, rebuild on new device; if the
 //!          thread was playing, start the new stream too so a mid-session
 //!          mic swap keeps recording.
-//!      Device/Config aren't re-enumerated on Play/Pause — the expensive
-//!      WASAPI lookups happen only at startup and on SwitchDevice, so
-//!      the session-start latency is just IAudioClient::Start.
+//!          Device/Config aren't re-enumerated on Play/Pause — the expensive
+//!          WASAPI lookups happen only at startup and on SwitchDevice, so
+//!          the session-start latency is just IAudioClient::Start.
 //!   3. On each cpal callback (which only fires while the stream is
 //!      playing): downmix to mono, compute RMS (→ atomic for overlay
 //!      waveform viz), and — if the atomic gate is open — resample to
@@ -258,6 +258,7 @@ pub fn list_input_devices() -> Vec<String> {
 /// (tray / settings) can spot it with `device_name().starts_with("<")`.
 const NO_DEVICE_NAME: &str = "<no input device>";
 
+#[allow(clippy::too_many_arguments)]
 fn run_capture_thread(
     initial: DeviceChoice,
     instant_record: bool,

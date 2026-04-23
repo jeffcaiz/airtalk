@@ -4,17 +4,15 @@
 //! diffs, and doesn't show state labels like "Listening…" / "Processing…".
 //! The overlay conveys state purely through shape and animation:
 //!
-//!   * [`OverlayState::Idle`]       — fully transparent (hidden).
-//!   * [`OverlayState::Recording`]  — 5-bar waveform, driven by the
-//!                                     audio thread's RMS atomic with a
-//!                                     small phase-offset per bar so each
-//!                                     dances slightly differently.
+//!   * [`OverlayState::Idle`] — fully transparent (hidden).
+//!   * [`OverlayState::Recording`] — 5-bar waveform, driven by the
+//!     audio thread's RMS atomic with a small phase-offset per bar so
+//!     each dances slightly differently.
 //!   * [`OverlayState::Processing`] — 3 bouncing dots.
 //!   * [`OverlayState::Success`]    — green ✓ with a stroke-in intro,
-//!                                     auto-returns to Idle after ~800 ms.
-//!                                     Fires after a successful paste.
+//!     auto-returns to Idle after ~800 ms. Fires after a successful paste.
 //!   * [`OverlayState::Error`]      — red X, auto-returns to Idle after
-//!                                     ~800 ms.
+//!     ~800 ms.
 //!
 //! Rendering: pure-Rust via [`tiny_skia`] into a premultiplied-RGBA
 //! `Pixmap`. Each frame we byte-swap R↔B into a DIB section and blit
@@ -173,7 +171,13 @@ fn run_overlay_thread(
         // Start with primary monitor's scale; will be updated on the
         // first Idle → active transition via reposition_and_resize().
         let (_, initial_scale) = active_monitor_info();
-        let mut target = RenderTarget::create(screen_dc, initial_scale)?;
+        let mut target = match RenderTarget::create(screen_dc, initial_scale) {
+            Ok(target) => target,
+            Err(e) => {
+                cleanup_window(hwnd, screen_dc);
+                return Err(e);
+            }
+        };
         reposition_and_resize(hwnd, &target);
 
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
@@ -365,8 +369,10 @@ fn draw_pill_background(pixmap: &mut Pixmap, w: f32, h: f32, alpha: f32, scale: 
         Color::from_rgba(1.0, 1.0, 1.0, BORDER_ALPHA * alpha).unwrap_or(Color::TRANSPARENT),
     );
     border.anti_alias = true;
-    let mut stroke = Stroke::default();
-    stroke.width = 1.0 * scale;
+    let stroke = Stroke {
+        width: 1.0 * scale,
+        ..Stroke::default()
+    };
     pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
 }
 
@@ -530,10 +536,12 @@ fn draw_success_check(
             .unwrap_or_else(|| Color::from_rgba8(56, 214, 153, 255)),
     );
     paint.anti_alias = true;
-    let mut stroke = Stroke::default();
-    stroke.width = 3.5 * scale;
-    stroke.line_cap = tiny_skia::LineCap::Round;
-    stroke.line_join = tiny_skia::LineJoin::Round;
+    let stroke = Stroke {
+        width: 3.5 * scale,
+        line_cap: tiny_skia::LineCap::Round,
+        line_join: tiny_skia::LineJoin::Round,
+        ..Stroke::default()
+    };
 
     if let Some(path) = pb.finish() {
         pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
@@ -559,9 +567,11 @@ fn draw_error_x(
             .unwrap_or_else(|| Color::from_rgba8(255, 82, 82, 255)),
     );
     paint.anti_alias = true;
-    let mut stroke = Stroke::default();
-    stroke.width = 3.0 * scale;
-    stroke.line_cap = tiny_skia::LineCap::Round;
+    let stroke = Stroke {
+        width: 3.0 * scale,
+        line_cap: tiny_skia::LineCap::Round,
+        ..Stroke::default()
+    };
 
     let mut pb = PathBuilder::new();
     pb.move_to(cx - r, cy - r);
@@ -676,9 +686,23 @@ impl RenderTarget {
     }
 
     unsafe fn destroy(&mut self) {
-        let _ = SelectObject(self.mem_dc, self.old_obj);
-        let _ = DeleteObject(self.dib_handle);
-        let _ = DeleteDC(self.mem_dc);
+        if !self.mem_dc.is_invalid() {
+            let _ = SelectObject(self.mem_dc, self.old_obj);
+            let _ = DeleteDC(self.mem_dc);
+            self.mem_dc = HDC::default();
+        }
+        if !self.dib_handle.is_invalid() {
+            let _ = DeleteObject(self.dib_handle);
+            self.dib_handle = HGDIOBJ::default();
+        }
+    }
+}
+
+impl Drop for RenderTarget {
+    fn drop(&mut self) {
+        unsafe {
+            self.destroy();
+        }
     }
 }
 

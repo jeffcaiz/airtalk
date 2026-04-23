@@ -306,12 +306,12 @@ const HEADER_CLOSE_LOGICAL_W: i32 = 48;
 
 /// Apply the Win32-level behavior Slint's `Window` can't express:
 ///
-///   * `WS_EX_TOOLWINDOW`                   hide from Alt+Tab
-///   * window subclass                      native drag via HTCAPTION
-///                                          in the header region
-///   * DWM rounded corners                  Win 11 only (square on Win 10)
-///   * `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` — anchor to
-///                                          `prev_fg`'s monitor
+///   * `WS_EX_TOOLWINDOW` hides from Alt+Tab
+///   * window subclass provides native drag via HTCAPTION in the header
+///     region
+///   * DWM rounded corners on Win 11 only (square on Win 10)
+///   * `SetWindowPos(HWND_TOPMOST, SWP_NOACTIVATE)` anchors to
+///     `prev_fg`'s monitor
 ///
 /// We intentionally **let the popup take focus on show**. Experiments
 /// with `SetForegroundWindow(prev_fg)` + `MA_NOACTIVATE` + `forward-focus`

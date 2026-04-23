@@ -136,9 +136,10 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
 }
 
 fn device_options(current: &AppConfig) -> (Vec<SharedString>, i32) {
-    let mut options: Vec<SharedString> = Vec::with_capacity(1 + audio::list_input_devices().len());
+    let devices = audio::list_input_devices();
+    let mut options: Vec<SharedString> = Vec::with_capacity(1 + devices.len());
     options.push("Auto (system default)".into());
-    options.extend(audio::list_input_devices().into_iter().map(Into::into));
+    options.extend(devices.into_iter().map(Into::into));
 
     let selected = match audio_choice_from_config(current) {
         DeviceChoice::Auto => 0,

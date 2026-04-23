@@ -45,6 +45,7 @@ const SILERO_ONNX: &[u8] = include_bytes!("../../assets/silero_vad.onnx");
 const SAMPLE_RATE: i64 = 16_000;
 const FRAME_SAMPLES: usize = 512; // 32 ms @ 16 kHz (Silero v5)
 const FRAME_MS: u32 = 32;
+const MAX_SPEECH_SAMPLES: usize = 5 * 60 * SAMPLE_RATE as usize;
 /// Silero v5 expects each inference to see 64 samples of context from
 /// the previous chunk, prepended before the 512 new samples. Without
 /// it the model's input-side convolution computes garbage on the
@@ -117,11 +118,25 @@ impl SileroFactory {
 
 impl VadFactory for SileroFactory {
     fn create(&self) -> Box<dyn VadEngine> {
-        // Already probed at startup. A failure here would indicate
-        // process-level corruption (ort DLL unloaded, embedded bytes
-        // clobbered) — unrecoverable, panic is the right move.
-        let session = build_session().expect("Silero ONNX re-parse failed after startup probe");
-        Box::new(SileroEngine::new(session, self.config.clone()))
+        match build_session() {
+            Ok(session) => Box::new(SileroEngine::new(session, self.config.clone())),
+            Err(e) => {
+                log::error!("Silero ONNX re-parse failed after startup probe: {e}");
+                Box::new(DisabledVadEngine)
+            }
+        }
+    }
+}
+
+struct DisabledVadEngine;
+
+impl VadEngine for DisabledVadEngine {
+    fn push_pcm(&mut self, _pcm: &[u8]) -> Vec<SpeechSegment> {
+        Vec::new()
+    }
+
+    fn finish(&mut self) -> Option<SpeechSegment> {
+        None
     }
 }
 
@@ -280,6 +295,19 @@ impl SileroEngine {
                         samples.append(&mut self.trailing);
                     }
                     samples.extend_from_slice(frame);
+                    if samples.len() >= MAX_SPEECH_SAMPLES {
+                        log::warn!(
+                            "VAD: forcing segment close after {} ms of continuous speech",
+                            samples_to_ms(samples.len())
+                        );
+                        self.state_machine = State::Silence;
+                        self.trailing.clear();
+                        self.pre_buf.clear();
+                        self.segments_emitted += 1;
+                        return Some(SpeechSegment {
+                            pcm: f32_to_pcm16_bytes(&samples),
+                        });
+                    }
                     silence_ms = 0;
                     self.state_machine = State::Speech {
                         samples,

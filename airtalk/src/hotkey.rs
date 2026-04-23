@@ -28,13 +28,15 @@ use anyhow::{anyhow, Context, Result};
 use tokio::sync::mpsc;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_CAPITAL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT,
     VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, SetWindowsHookExW, TranslateMessage, HHOOK,
-    KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
+    TranslateMessage, HHOOK, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN, WM_KEYUP, WM_QUIT,
+    WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 /// Events emitted by the hotkey engine. Press starts a recording cycle;
@@ -138,9 +140,8 @@ fn trigger_vk(t: Trigger) -> u32 {
 
 pub struct Hotkey {
     events: mpsc::UnboundedReceiver<HotkeyEvent>,
-    // Thread parks on GetMessage forever; dropping the join handle
-    // detaches it. Process exit (or Job Object) will reap it.
-    _thread: JoinHandle<()>,
+    thread_id: u32,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Hotkey {
@@ -157,7 +158,7 @@ impl Hotkey {
             .set(state)
             .map_err(|_| anyhow!("Hotkey::start already called in this process"))?;
 
-        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<()>>();
+        let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<u32>>();
         let thread = std::thread::Builder::new()
             .name("airtalk-hotkey".into())
             .spawn(move || {
@@ -165,7 +166,7 @@ impl Hotkey {
             })
             .context("spawn hotkey thread")?;
 
-        init_rx
+        let thread_id = init_rx
             .recv_timeout(Duration::from_secs(2))
             .context("hotkey thread init timeout (2s)")?
             .context("hotkey thread init error")?;
@@ -178,7 +179,8 @@ impl Hotkey {
 
         Ok(Self {
             events: rx,
-            _thread: thread,
+            thread_id,
+            thread: Some(thread),
         })
     }
 
@@ -223,6 +225,17 @@ impl Hotkey {
     }
 }
 
+impl Drop for Hotkey {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 struct HookState {
     /// Atomic because `Hotkey::reconfigure` swaps this live from the
     /// main loop while the hook thread is reading on every keystroke.
@@ -254,8 +267,9 @@ enum LogicalState {
 
 static HOOK_STATE: OnceLock<HookState> = OnceLock::new();
 
-fn run_hook_thread(init_tx: std::sync::mpsc::Sender<Result<()>>) {
+fn run_hook_thread(init_tx: std::sync::mpsc::Sender<Result<u32>>) {
     unsafe {
+        let thread_id = GetCurrentThreadId();
         let h_module = match GetModuleHandleW(None) {
             Ok(h) => h,
             Err(e) => {
@@ -279,7 +293,7 @@ fn run_hook_thread(init_tx: std::sync::mpsc::Sender<Result<()>>) {
             }
         };
 
-        let _ = init_tx.send(Ok(()));
+        let _ = init_tx.send(Ok(thread_id));
 
         // Message pump. The low-level hook is called from here; blocking
         // or taking too long causes Windows to silently unhook us.
@@ -382,8 +396,8 @@ fn handle_key_up(state: &HookState) {
     };
     let mode = decode_mode(state.mode.load(Ordering::Acquire));
     match mode {
-        Mode::Combo => match *logical {
-            LogicalState::Hold { down_at } => {
+        Mode::Combo => {
+            if let LogicalState::Hold { down_at } = *logical {
                 let elapsed = down_at.elapsed().as_millis();
                 if elapsed >= COMBO_HOLD_MS {
                     // Long hold — classical push-to-talk release.
@@ -394,8 +408,7 @@ fn handle_key_up(state: &HookState) {
                     *logical = LogicalState::Toggle;
                 }
             }
-            _ => {}
-        },
+        }
         Mode::Hold => {
             if matches!(*logical, LogicalState::Hold { .. }) {
                 *logical = LogicalState::Idle;

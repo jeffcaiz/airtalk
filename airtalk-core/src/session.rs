@@ -21,6 +21,8 @@ use crate::config::CoreConfig;
 use crate::llm::LlmProvider;
 use crate::vad::VadFactory;
 
+const MAX_SINGLE_UTTERANCE_PCM_BYTES: usize = 5 * 60 * 16_000 * 2;
+
 /// PCM16 LE 16 kHz mono → milliseconds. 32 bytes = 1 ms.
 #[inline]
 fn pcm_bytes_to_ms(bytes: usize) -> u32 {
@@ -207,9 +209,9 @@ impl SessionParams {
 enum ActorCmd {
     /// Incoming Request from stdin.
     Req(Request),
-    /// A pipeline task has finished (sent its terminal response or was
-    /// cancelled). Lets the actor clear `current` if the id matches.
-    PipelineDone(u64),
+    /// A pipeline task has finished. The actor is the sole owner of
+    /// terminal response delivery, which avoids cancel/result races.
+    PipelineDone { id: u64, response: Option<Response> },
     /// Graceful-shutdown signal from the stdin reader on EOF. The
     /// actor stops accepting new Begins but lets the current pipeline
     /// (if any) finish and emit its terminal response, then exits.
@@ -283,7 +285,6 @@ async fn run_actor(
                     vad,
                     audio_rx,
                     cancel.clone(),
-                    response_tx.clone(),
                     cmd_tx.clone(),
                     asr.clone(),
                     llm.clone(),
@@ -337,9 +338,12 @@ async fn run_actor(
                 }
             }
 
-            ActorCmd::PipelineDone(id) => {
+            ActorCmd::PipelineDone { id, response } => {
                 if let Some(s) = current.as_ref() {
                     if s.id == id {
+                        if let Some(response) = response {
+                            let _ = response_tx.send(response);
+                        }
                         current = None;
                     }
                 }
@@ -362,10 +366,9 @@ async fn run_actor(
         }
 
         // Graceful exit: after Shutdown has been observed AND the
-        // current pipeline (if any) has sent its PipelineDone, we can
-        // break out. The pipeline's Response::Result/Error was already
-        // written to `response_tx` before PipelineDone, so the stdout
-        // task has seen it.
+        // current pipeline (if any) has sent PipelineDone, we can break
+        // out. If PipelineDone carried a terminal response, the actor
+        // delivered it above before clearing `current`.
         if shutting_down && current.is_none() {
             break;
         }
@@ -382,6 +385,8 @@ enum PipelineError {
     Cancelled,
     #[error("no_audio")]
     NoAudio,
+    #[error("audio_too_large")]
+    AudioTooLarge,
     #[error("timeout")]
     Timeout,
     #[error("asr_failed: {0}")]
@@ -437,7 +442,6 @@ async fn run_pipeline(
     vad: bool,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     cancel: CancellationToken,
-    response_tx: mpsc::UnboundedSender<Response>,
     cmd_tx: mpsc::UnboundedSender<ActorCmd>,
     asr: Arc<dyn AsrProvider>,
     llm: Arc<dyn LlmProvider>,
@@ -468,34 +472,26 @@ async fn run_pipeline(
         .await
     };
 
-    // If the actor cancelled us, it already sent the terminal Error.
-    // Otherwise translate the outcome into a Response.
-    if !cancel.is_cancelled() {
-        let response = match outcome {
-            Ok(out) => Response::Result {
+    let response = if !cancel.is_cancelled() {
+        match outcome {
+            Ok(out) => Some(Response::Result {
                 id,
                 text: out.text,
                 raw: Some(out.raw),
                 language: out.language,
-                stats: out.stats,
-            },
-            Err(PipelineError::Cancelled) => {
-                // Defensive: only reachable if cancel got set between
-                // the check above and select branches below (possible
-                // under pathological scheduling). Do not emit a
-                // terminal response here — the actor will.
-                let _ = cmd_tx.send(ActorCmd::PipelineDone(id));
-                return;
-            }
-            Err(e) => Response::Error {
+                stats: Box::new(out.stats),
+            }),
+            Err(PipelineError::Cancelled) => None,
+            Err(e) => Some(Response::Error {
                 id,
                 message: e.to_string(),
-            },
-        };
-        let _ = response_tx.send(response);
-    }
+            }),
+        }
+    } else {
+        None
+    };
 
-    let _ = cmd_tx.send(ActorCmd::PipelineDone(id));
+    let _ = cmd_tx.send(ActorCmd::PipelineDone { id, response });
 }
 
 async fn run_segmented(
@@ -664,7 +660,12 @@ async fn run_single(
             biased;
             _ = cancel.cancelled() => return Err(PipelineError::Cancelled),
             recv = audio_rx.recv() => match recv {
-                Some(pcm) => buf.extend_from_slice(&pcm),
+                Some(pcm) => {
+                    if buf.len().saturating_add(pcm.len()) > MAX_SINGLE_UTTERANCE_PCM_BYTES {
+                        return Err(PipelineError::AudioTooLarge);
+                    }
+                    buf.extend_from_slice(&pcm);
+                }
                 None => break,
             }
         }

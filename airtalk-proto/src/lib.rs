@@ -72,29 +72,28 @@ pub const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 pub enum Request {
     /// Open a new session. Supersedes any in-flight session.
     ///
-    /// * `vad = true`  — core uses Silero VAD to slice the audio and
-    ///                   runs concurrent ASR per segment
+    /// * `vad = true` — core uses Silero VAD to slice the audio and
+    ///   runs concurrent ASR per segment
     /// * `vad = false` — core buffers the whole stream and runs ASR
-    ///                   once on `End`
+    ///   once on `End`
     ///
     /// Optional per-session overrides for the Qwen3-ASR call. When
     /// `None`, the core's startup defaults apply.
     ///
-    /// * `context`    — glossary / domain hints / recent conversation.
-    ///                  Sent to Qwen3-ASR as the system message, and
-    ///                  appended to the LLM cleanup system prompt.
-    /// * `language`   — BCP-47-ish language tag (`"zh"`, `"en"`, …).
-    ///                  The literal `"auto"` (or empty) forces
-    ///                  language identification on the ASR side.
+    /// * `context` — glossary / domain hints / recent conversation.
+    ///   Sent to Qwen3-ASR as the system message, and appended to the
+    ///   LLM cleanup system prompt.
+    /// * `language` — BCP-47-ish language tag (`"zh"`, `"en"`, …).
+    ///   The literal `"auto"` (or empty) forces language
+    ///   identification on the ASR side.
     /// * `enable_itn` — inverse text normalization
-    ///                  (digits / punctuation normalization).
+    ///   (digits / punctuation normalization).
     /// * `enable_llm` — per-session LLM cleanup toggle. `Some(false)`
-    ///                  skips cleanup and returns raw ASR text.
-    ///                  `Some(true)` requests cleanup; if the core
-    ///                  was started with `--no-llm`, core silently
-    ///                  downgrades to raw (logs a warning) — the UI
-    ///                  always gets a `Result`, never an error, for
-    ///                  this mismatch. `None` = use core default.
+    ///   skips cleanup and returns raw ASR text. `Some(true)` requests
+    ///   cleanup; if the core was started with `--no-llm`, core
+    ///   silently downgrades to raw (logs a warning) — the UI always
+    ///   gets a `Result`, never an error, for this mismatch. `None` =
+    ///   use core default.
     Begin {
         id: u64,
         vad: bool,
@@ -139,19 +138,16 @@ pub enum Response {
 
     /// Successful completion.
     ///
-    /// * `text`     — final output (LLM-cleaned unless `--no-llm` was
-    ///                passed, in which case equals `raw`).
-    /// * `raw`      — concatenated ASR text before LLM cleanup. Always
-    ///                populated when ASR ran; may equal `text` when
-    ///                LLM is disabled.
+    /// * `text` — final output (LLM-cleaned unless `--no-llm` was
+    ///   passed, in which case equals `raw`).
+    /// * `raw` — concatenated ASR text before LLM cleanup. Always
+    ///   populated when ASR ran; may equal `text` when LLM is disabled.
     /// * `language` — language detected by Qwen3-ASR. When
-    ///                VAD-segmented, this is the first segment's
-    ///                language — good enough as a UI hint, not a
-    ///                per-segment tag.
-    /// * `stats`    — per-session counters + latencies + provider
-    ///                usage. Always populated; individual subfields
-    ///                may still be `None` (e.g. `llm_usage` when
-    ///                cleanup was skipped).
+    ///   VAD-segmented, this is the first segment's language — good
+    ///   enough as a UI hint, not a per-segment tag.
+    /// * `stats` — per-session counters + latencies + provider usage.
+    ///   Always populated; individual subfields may still be `None`
+    ///   (e.g. `llm_usage` when cleanup was skipped).
     Result {
         id: u64,
         text: String,
@@ -159,7 +155,7 @@ pub enum Response {
         raw: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         language: Option<String>,
-        stats: SessionStats,
+        stats: Box<SessionStats>,
     },
 
     /// Abnormal session termination.
@@ -303,6 +299,7 @@ pub mod error_code {
     pub const CANCELLED: &str = "cancelled";
     pub const SUPERSEDED: &str = "superseded";
     pub const NO_AUDIO: &str = "no_audio";
+    pub const AUDIO_TOO_LARGE: &str = "audio_too_large";
     pub const TIMEOUT: &str = "timeout";
     pub const ASR_FAILED_PREFIX: &str = "asr_failed:";
     pub const LLM_FAILED_PREFIX: &str = "llm_failed:";
@@ -377,6 +374,12 @@ where
             }
             Ok(_) => {
                 if byte[0] == b'\n' {
+                    if buf.len() >= MAX_FRAME_SIZE {
+                        return Err(ProtocolError::FrameTooLarge {
+                            got: buf.len(),
+                            max: MAX_FRAME_SIZE,
+                        });
+                    }
                     break;
                 }
                 if buf.len() >= MAX_FRAME_SIZE {
@@ -425,33 +428,51 @@ mod tokio_io {
     /// Async counterpart to [`read_frame`]. Caller must hand in an
     /// [`AsyncBufRead`] — wrap `stdin()` in `tokio::io::BufReader`.
     ///
-    /// Enforces a post-read size check against [`MAX_FRAME_SIZE`]. A
-    /// sufficiently hostile peer could still make us allocate up to
-    /// that cap before we notice; this is acceptable for the stdio
-    /// trust boundary where both endpoints are our own processes.
+    /// Enforces [`MAX_FRAME_SIZE`] while reading so a peer cannot force
+    /// unbounded allocation by withholding the trailing newline.
     pub async fn read_frame_async<R, M>(r: &mut R) -> Result<M, ProtocolError>
     where
         R: AsyncBufRead + Unpin,
         M: for<'de> Deserialize<'de>,
     {
         let mut buf = Vec::new();
-        let n = r.read_until(b'\n', &mut buf).await?;
-        if n == 0 {
-            return Err(ProtocolError::Eof);
-        }
-        if buf.last() != Some(&b'\n') {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "partial line: no trailing newline",
-            )
-            .into());
-        }
-        buf.pop(); // drop the newline
-        if buf.len() > MAX_FRAME_SIZE {
-            return Err(ProtocolError::FrameTooLarge {
-                got: buf.len(),
-                max: MAX_FRAME_SIZE,
-            });
+        loop {
+            let available = r.fill_buf().await?;
+            if available.is_empty() {
+                return if buf.is_empty() {
+                    Err(ProtocolError::Eof)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "partial line: no trailing newline",
+                    )
+                    .into())
+                };
+            }
+
+            if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+                let payload_len = buf.len() + pos;
+                if payload_len >= MAX_FRAME_SIZE {
+                    return Err(ProtocolError::FrameTooLarge {
+                        got: payload_len,
+                        max: MAX_FRAME_SIZE,
+                    });
+                }
+                buf.extend_from_slice(&available[..pos]);
+                r.consume(pos + 1);
+                break;
+            }
+
+            let next_len = buf.len() + available.len();
+            if next_len >= MAX_FRAME_SIZE {
+                return Err(ProtocolError::FrameTooLarge {
+                    got: next_len,
+                    max: MAX_FRAME_SIZE,
+                });
+            }
+            let consumed = available.len();
+            buf.extend_from_slice(available);
+            r.consume(consumed);
         }
         Ok(serde_json::from_slice(&buf)?)
     }
@@ -566,6 +587,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn roundtrip_cancel() {
+        let msg = Request::Cancel { id: 9 };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &msg).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Request = read_frame(&mut cursor).unwrap();
+        assert!(matches!(decoded, Request::Cancel { id: 9 }));
+    }
+
+    #[test]
+    fn roundtrip_error() {
+        let msg = Response::Error {
+            id: 11,
+            message: "cancelled".into(),
+        };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &msg).unwrap();
+
+        let mut cursor = Cursor::new(buf);
+        let decoded: Response = read_frame(&mut cursor).unwrap();
+        assert!(matches!(
+            decoded,
+            Response::Error {
+                id: 11,
+                ref message
+            } if message == "cancelled"
+        ));
+    }
+
+    #[test]
+    fn read_frame_rejects_exact_max_payload() {
+        let mut data = vec![b' '; MAX_FRAME_SIZE];
+        data.push(b'\n');
+        let mut cursor = Cursor::new(data);
+        let err: Result<serde_json::Value, _> = read_frame(&mut cursor);
+        assert!(matches!(
+            err,
+            Err(ProtocolError::FrameTooLarge {
+                got: MAX_FRAME_SIZE,
+                max: MAX_FRAME_SIZE
+            })
+        ));
+    }
+
+    #[test]
+    fn invalid_base64_chunk_is_json_error() {
+        let data = br#"{"type":"chunk","id":1,"pcm":"not base64!!!"}"#.to_vec();
+        let mut framed = data;
+        framed.push(b'\n');
+        let mut cursor = Cursor::new(framed);
+        let err: Result<Request, _> = read_frame(&mut cursor);
+        assert!(matches!(err, Err(ProtocolError::Json(_))), "got {err:?}");
+    }
+
     /// Regression guard: `pcm` MUST go on the wire as a standard
     /// base64 JSON string, not an array of numbers. An array encoding
     /// would bloat by ~5× and be awkward for non-Rust consumers.
@@ -619,7 +696,7 @@ mod tests {
             text: "你好，世界。🌏".to_string(),
             raw: Some("你好世界".to_string()),
             language: Some("zh".to_string()),
-            stats: stats.clone(),
+            stats: Box::new(stats.clone()),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &msg).unwrap();
@@ -638,7 +715,7 @@ mod tests {
                 assert_eq!(text, "你好，世界。🌏");
                 assert_eq!(raw.as_deref(), Some("你好世界"));
                 assert_eq!(language.as_deref(), Some("zh"));
-                assert_eq!(got_stats, stats);
+                assert_eq!(*got_stats, stats);
             }
             _ => panic!("wrong variant"),
         }
@@ -706,7 +783,7 @@ mod tests {
             text: "line1\nline2\nline3".into(),
             raw: None,
             language: None,
-            stats: SessionStats::default(),
+            stats: Box::new(SessionStats::default()),
         };
         let mut buf = Vec::new();
         write_frame(&mut buf, &msg).unwrap();
@@ -752,5 +829,42 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn async_rejects_exact_max_payload() {
+        use tokio::io::BufReader;
+
+        let mut data = vec![b' '; MAX_FRAME_SIZE];
+        data.push(b'\n');
+        let mut reader = BufReader::new(data.as_slice());
+
+        let err: Result<serde_json::Value, _> = read_frame_async(&mut reader).await;
+        assert!(matches!(
+            err,
+            Err(ProtocolError::FrameTooLarge {
+                got: MAX_FRAME_SIZE,
+                max: MAX_FRAME_SIZE
+            })
+        ));
+    }
+
+    #[cfg(feature = "tokio")]
+    #[tokio::test]
+    async fn async_rejects_unterminated_oversize_payload() {
+        use tokio::io::BufReader;
+
+        let data = vec![b' '; MAX_FRAME_SIZE];
+        let mut reader = BufReader::new(data.as_slice());
+
+        let err: Result<serde_json::Value, _> = read_frame_async(&mut reader).await;
+        assert!(matches!(
+            err,
+            Err(ProtocolError::FrameTooLarge {
+                got: MAX_FRAME_SIZE,
+                max: MAX_FRAME_SIZE
+            })
+        ));
     }
 }

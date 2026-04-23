@@ -674,10 +674,11 @@ async fn recv_core(client: &Option<CoreClient>) -> Option<Response> {
 }
 
 async fn restart_core(client: &mut Option<CoreClient>) -> Result<()> {
-    let new_client = spawn_core_from_settings().await?;
-    if let Some(old_client) = client.replace(new_client) {
+    if let Some(old_client) = client.take() {
         old_client.shutdown().await?;
     }
+    let new_client = spawn_core_from_settings().await?;
+    *client = Some(new_client);
     Ok(())
 }
 
