@@ -1,14 +1,14 @@
 # airtalk-core assets
 
-## silero_vad.onnx (not committed)
+## silero_vad.onnx
 
-Download from the official Silero VAD release and place here:
+Committed to the repo (~2 MB). Source:
 
   https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
 
-The file is ~2 MB. `airtalk-core/src/vad/silero.rs` includes it at
-compile time via `include_bytes!`, so the binary is self-contained —
-but the source tree needs the file present to build.
+`airtalk-core/src/vad/silero.rs` includes it at compile time via
+`include_bytes!`, so the binary is self-contained and CI needs no
+extra download step.
 
 Tested against Silero VAD v5 (512-sample frames @ 16 kHz, LSTM state
 shape [2, 1, 128]). If you use a different version, verify the tensor
