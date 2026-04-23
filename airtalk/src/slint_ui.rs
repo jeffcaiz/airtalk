@@ -143,6 +143,7 @@ export component SettingsWindow inherits Window {
     in-out property <string> llm-model;
     in-out property <[string]> device-model;
     in-out property <int> device-index;
+    in-out property <bool> instant-record;
     // Region ComboBox picks a DashScope endpoint preset (Mainland /
     // International). Selecting a value overwrites `asr-base-url` and
     // `llm-base-url` in one shot. Derived on load from the URLs, not
@@ -241,6 +242,22 @@ export component SettingsWindow inherits Window {
                             ComboBox {
                                 model: root.device-model;
                                 current-index <=> root.device-index;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: space-between;
+                            spacing: 12px;
+                            VerticalLayout {
+                                spacing: 2px;
+                                horizontal-stretch: 1;
+                                FieldLabel { text: "Instant record"; }
+                                FieldHint {
+                                    text: "Keep the mic capturing continuously so a recording starts with no warm-up delay. Windows will show the mic-in-use indicator whenever AirTalk is running. Enable only if press-to-talk feels laggy on your microphone (Bluetooth mics are the usual culprit).";
+                                }
+                            }
+                            CheckBox {
+                                checked <=> root.instant-record;
                             }
                         }
                     }

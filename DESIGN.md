@@ -460,10 +460,25 @@ This crate is **a stub**. Planned components:
 - **Overlay window**: WPF-style layered window with
   `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOPMOST`.
   Shows recording/processing state and mic level.
-- **Audio capture**: `cpal` in a dedicated thread, running
-  continuously once initialized (avoids device warm-up latency per
-  session). A gate flag controls whether frames are forwarded.
-  Resample to 16 kHz mono PCM16 LE before sending to core.
+- **Audio capture**: `cpal` in a dedicated thread. The input stream is
+  built once at startup (device enumeration + WASAPI format negotiation
+  happen up front). Two modes, chosen by the `audio.instant_record`
+  config flag:
+  - **Default (`instant_record = false`)**: stream is held in the
+    stopped state between sessions. Hotkey press sends a Play message
+    → `stream.play()` (`IAudioClient::Start`); release sends Pause →
+    `stream.pause()` (`IAudioClient::Stop`). Windows' mic-in-use
+    indicator only appears during actual recording, at the cost of one
+    WASAPI Start round-trip at press time (noticeable on some
+    Bluetooth mics).
+  - **`instant_record = true`**: stream is started at build time and
+    runs continuously; open_gate/close_gate only flip the forwarding
+    gate. Zero warm-up at press; mic indicator stays on always.
+  A gate flag sits on top of play/pause regardless of mode: in the
+  default mode it drops any callback that fires during the tiny window
+  between `close_gate` and the audio thread servicing the Pause
+  message, and it also resets the resampler state at session
+  boundaries. Resample to 16 kHz mono PCM16 LE before sending to core.
 - **Paste**: two strategies, configurable.
   - `clipboard` (default): `SetClipboardData(CF_UNICODETEXT)` +
     `SendInput(Ctrl+V)`. Back up/restore old clipboard around it.
@@ -640,8 +655,10 @@ Next steps:
 1. **UI (`airtalk.exe`)**, build incrementally in this order:
    - `core_client` — spawn core, NDJSON framing, Job Object attach,
      lifecycle. Simplest first deliverable; proves stdio roundtrip.
-   - `audio_capture` — cpal input stream, 16 kHz mono PCM16 resample,
-     always-on + gate flag (avoids per-session warm-up latency).
+   - `audio_capture` — cpal input stream, 16 kHz mono PCM16 resample.
+     Stream is built at startup and then play/pause'd per session so the
+     Win11 mic indicator only lights during actual recording; a gate
+     flag on top of play/pause guards session boundaries.
    - `hotkey` — WH_KEYBOARD_LL, hold/tap modes, eat Alt to dodge F10
      menu activation.
    - `overlay` — layered + transparent + noactivate + topmost window

@@ -71,6 +71,14 @@ pub struct LlmConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub input_device: String,
+    // `serde(default)` so existing config.toml files (written before
+    // this field existed) still deserialize — missing value falls back
+    // to false (pause/play per session, mic indicator only while
+    // recording). True = keep the capture stream running continuously
+    // for press-to-first-sample with no warm-up; Windows shows
+    // mic-in-use whenever AirTalk is running.
+    #[serde(default)]
+    pub instant_record: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,6 +188,7 @@ impl Default for AppConfig {
             },
             audio: AudioConfig {
                 input_device: "auto".into(),
+                instant_record: false,
             },
             hotkey: HotkeyConfig::default(),
         }
@@ -478,6 +487,7 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
     let (options, selected) = device_options(&snapshot.config);
     window.set_device_model(ModelRc::new(VecModel::from(options)));
     window.set_device_index(selected);
+    window.set_instant_record(snapshot.config.audio.instant_record);
     window.set_autostart_enabled(snapshot.autostart_enabled);
     window.set_asr_lang(snapshot.config.asr.lang.clone().into());
     window.set_asr_base_url(snapshot.config.asr.base_url.clone().into());
@@ -549,6 +559,7 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
         },
         audio: AudioConfig {
             input_device: selected_device(window.get_device_index(), &snapshot.config),
+            instant_record: window.get_instant_record(),
         },
         hotkey: HotkeyConfig {
             trigger: trigger_from_index(window.get_hotkey_trigger_index()),

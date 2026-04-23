@@ -1,24 +1,44 @@
-//! Always-on microphone capture with a gated forwarder to core.
+//! Microphone capture with per-session WASAPI Start/Stop.
 //!
 //! `cpal::Stream` is not `Send` on Windows (it owns thread-local WASAPI
 //! state), so the stream lives in a dedicated std thread spawned by
 //! [`AudioCapture::start`]. The thread:
 //!
 //!   1. Opens the requested input device (default when
-//!      [`DeviceChoice::Auto`], by name otherwise) and keeps the stream
-//!      running forever (no start/stop per session — that path has a
-//!      ~1 s warm-up penalty on USB mics).
-//!   2. On each cpal callback: downmix to mono, compute RMS (→ atomic
-//!      for overlay waveform viz), and — if the atomic gate is open —
-//!      resample to 16 kHz PCM16 LE and forward 30 ms chunks into the
-//!      mpsc consumed by the UI loop.
-//!   3. When the gate is closed, the resampler's state is reset and the
-//!      pending-output buffer is cleared so the next open starts at a
-//!      clean zero-phase.
-//!   4. Blocks on a control channel between streams. [`switch_to`] posts
-//!      a message; the thread drops the current stream, rebuilds on the
-//!      new device, and resumes. The same `AudioCapture` handle survives
-//!      the switch — the pcm_rx is shared across stream lifetimes.
+//!      [`DeviceChoice::Auto`], by name otherwise) and **builds** the
+//!      cpal input stream. Whether it then calls `stream.play()`
+//!      depends on the `instant_record` flag the caller passed:
+//!        - false (default): leave the stream in the stopped state.
+//!          WASAPI Start happens only when `open_gate` sends a Play
+//!          message, so Windows' mic-in-use indicator only lights up
+//!          while the user is actually recording. Cost: one
+//!          `IAudioClient::Start` round-trip of warm-up at press time
+//!          (fast on built-in mics, noticeable on some Bluetooth mics).
+//!        - true: start the stream immediately and keep it running for
+//!          the life of the process. `open_gate` / `close_gate` only
+//!          toggle the forwarding gate — no Play/Pause messages are
+//!          sent. Zero warm-up at press; mic indicator stays on always.
+//!   2. Serves messages from [`AudioCapture::open_gate`] /
+//!      [`close_gate`] / [`switch_to`]:
+//!        - Play  → `stream.play()`  (IAudioClient::Start, indicator on)
+//!        - Pause → `stream.pause()` (IAudioClient::Stop,  indicator off)
+//!        - SwitchDevice → drop stream, rebuild on new device; if the
+//!          thread was playing, start the new stream too so a mid-session
+//!          mic swap keeps recording.
+//!      Device/Config aren't re-enumerated on Play/Pause — the expensive
+//!      WASAPI lookups happen only at startup and on SwitchDevice, so
+//!      the session-start latency is just IAudioClient::Start.
+//!   3. On each cpal callback (which only fires while the stream is
+//!      playing): downmix to mono, compute RMS (→ atomic for overlay
+//!      waveform viz), and — if the atomic gate is open — resample to
+//!      16 kHz PCM16 LE and forward 30 ms chunks into the mpsc consumed
+//!      by the UI loop. The gate still exists on top of play/pause for
+//!      two reasons: (a) it guards the brief window after `close_gate`
+//!      before Pause lands on the audio thread, so any final callback
+//!      drops its bytes instead of leaking into the next session;
+//!      (b) gate-closed callbacks also reset the resampler state and
+//!      drain the pending-output buffer, so the next session starts at
+//!      a clean zero-phase boundary.
 //!
 //! Resampling is linear interpolation — adequate for 16 kHz speech ASR.
 //! A one-sample history (`prev_sample`) carries across cpal callbacks so
@@ -50,6 +70,8 @@ pub enum DeviceChoice {
 
 enum ControlMsg {
     SwitchDevice(DeviceChoice),
+    Play,
+    Pause,
 }
 
 /// Handle to a running capture stream. Drop to stop capture.
@@ -59,15 +81,51 @@ pub struct AudioCapture {
     pcm_rx: mpsc::UnboundedReceiver<Vec<u8>>,
     control_tx: std::sync::mpsc::Sender<ControlMsg>,
     device_name: Arc<Mutex<String>>,
+    /// User setting: when true, the stream stays in WASAPI Start state
+    /// from app launch to exit — zero warm-up at session start but
+    /// Windows shows the mic-in-use indicator continuously. Determines
+    /// whether `open_gate`/`close_gate` bother sending Play/Pause.
+    instant_record: bool,
     _thread: JoinHandle<()>,
 }
 
 impl AudioCapture {
     /// Start capture on the requested device. Blocks briefly (≤ 3 s) while
     /// the capture thread builds its first stream so failures surface here.
-    pub fn start(choice: DeviceChoice) -> Result<Self> {
+    ///
+    /// `instant_record = true` runs the capture stream continuously (no
+    /// warm-up at session start, Win11 mic indicator always on while
+    /// AirTalk is running). `false` (default) pauses the WASAPI client
+    /// between sessions so the indicator only appears during actual
+    /// recording; press-to-first-sample pays one `IAudioClient::Start`
+    /// round-trip (~50–300 ms depending on device).
+    pub fn start(choice: DeviceChoice, instant_record: bool) -> Result<Self> {
+        Self::start_inner(choice, instant_record, None)
+    }
+
+    /// Like [`start`], but reuses the provided level atomic so an
+    /// already-running Overlay (which was handed `level_source()` from
+    /// an earlier AudioCapture) keeps reading live RMS values after the
+    /// rebuild instead of observing a dead Arc stuck at zero.
+    pub fn restart_with_level(
+        choice: DeviceChoice,
+        instant_record: bool,
+        level: Arc<AtomicU32>,
+    ) -> Result<Self> {
+        // Reset the old stale level before the new thread starts
+        // writing — avoids a one-frame flash of the previous session's
+        // final RMS on the overlay.
+        level.store(0, Ordering::Release);
+        Self::start_inner(choice, instant_record, Some(level))
+    }
+
+    fn start_inner(
+        choice: DeviceChoice,
+        instant_record: bool,
+        reused_level: Option<Arc<AtomicU32>>,
+    ) -> Result<Self> {
         let gate = Arc::new(AtomicBool::new(false));
-        let level = Arc::new(AtomicU32::new(0));
+        let level = reused_level.unwrap_or_else(|| Arc::new(AtomicU32::new(0)));
         let device_name = Arc::new(Mutex::new(String::new()));
         let (pcm_tx, pcm_rx) = mpsc::unbounded_channel();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlMsg>();
@@ -81,6 +139,7 @@ impl AudioCapture {
             .spawn(move || {
                 run_capture_thread(
                     choice,
+                    instant_record,
                     gate_c,
                     level_c,
                     pcm_tx,
@@ -102,6 +161,7 @@ impl AudioCapture {
             pcm_rx,
             control_tx,
             device_name,
+            instant_record,
             _thread: thread,
         })
     }
@@ -122,12 +182,32 @@ impl AudioCapture {
         self.level.clone()
     }
 
+    /// Begin a recording session. In the default (non-instant_record)
+    /// mode this sends Play to the audio thread (which calls
+    /// `cpal::Stream::play` → `IAudioClient::Start`, lighting the Win11
+    /// mic indicator) and then opens the forwarding gate. Play is sent
+    /// *before* the gate so WASAPI startup overlaps with whatever the
+    /// caller does next; the gate flip is cheap and immediate so no
+    /// callback frame can race ahead with gate=false and get dropped.
+    /// In instant_record mode the stream is already playing — we only
+    /// flip the gate.
     pub fn open_gate(&self) {
+        if !self.instant_record {
+            let _ = self.control_tx.send(ControlMsg::Play);
+        }
         self.gate.store(true, Ordering::Release);
     }
 
+    /// End a recording session. Closes the gate first so any in-flight
+    /// callback that fires between here and the audio thread handling
+    /// Pause drops its data cleanly. In the default mode Pause then
+    /// tears down WASAPI Start (indicator turns off) until the next
+    /// `open_gate`. In instant_record mode the stream keeps running.
     pub fn close_gate(&self) {
         self.gate.store(false, Ordering::Release);
+        if !self.instant_record {
+            let _ = self.control_tx.send(ControlMsg::Pause);
+        }
     }
 
     /// Current RMS level in [0.0, 1.0].
@@ -180,6 +260,7 @@ const NO_DEVICE_NAME: &str = "<no input device>";
 
 fn run_capture_thread(
     initial: DeviceChoice,
+    instant_record: bool,
     gate: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -189,6 +270,13 @@ fn run_capture_thread(
 ) {
     let mut choice = initial;
     let mut announced_init = false;
+    // Whether the user wants us recording right now. Persists across
+    // device switches so that mid-session mic changes resume capture on
+    // the new device without the caller having to re-send Play.
+    // Seeded from `instant_record`: when true, every successful build
+    // auto-plays the stream and Pause is never sent from the API side,
+    // so the stream stays in Start state for the life of the process.
+    let mut playing = instant_record;
 
     loop {
         // Try the requested choice first; if it's a `Named` device that
@@ -228,15 +316,47 @@ fn run_capture_thread(
                     let _ = init_tx.send(Ok(()));
                     announced_init = true;
                 }
-                // Block until the UI asks us to switch, then drop the
-                // stream (stop capture) and loop to rebuild.
-                match control_rx.recv() {
-                    Ok(ControlMsg::SwitchDevice(new)) => {
-                        drop(stream);
-                        choice = new;
+                // Restore Start state across a device switch — if the
+                // user was holding the hotkey when the switch landed, we
+                // keep recording on the new device.
+                if playing {
+                    if let Err(e) = stream.play() {
+                        log::warn!("stream.play after rebuild failed: {e}");
+                        playing = false;
                     }
-                    Err(_) => return,
                 }
+
+                // Serve control messages until the user asks to switch
+                // devices, at which point we drop this stream and loop
+                // to rebuild on the new choice.
+                loop {
+                    match control_rx.recv() {
+                        Ok(ControlMsg::Play) => {
+                            if !playing {
+                                if let Err(e) = stream.play() {
+                                    log::warn!("stream.play failed: {e}");
+                                } else {
+                                    playing = true;
+                                }
+                            }
+                        }
+                        Ok(ControlMsg::Pause) => {
+                            if playing {
+                                if let Err(e) = stream.pause() {
+                                    log::warn!("stream.pause failed: {e}");
+                                } else {
+                                    playing = false;
+                                }
+                            }
+                        }
+                        Ok(ControlMsg::SwitchDevice(new)) => {
+                            choice = new;
+                            break;
+                        }
+                        Err(_) => return,
+                    }
+                }
+                drop(stream);
             }
             None => {
                 // All attempts failed — no cpal device available right now.
@@ -252,9 +372,19 @@ fn run_capture_thread(
                     let _ = init_tx.send(Ok(()));
                     announced_init = true;
                 }
-                match control_rx.recv() {
-                    Ok(ControlMsg::SwitchDevice(new)) => choice = new,
-                    Err(_) => return,
+                // Eat Play/Pause while we have nothing to control; they
+                // just set the desired state for the next successful
+                // open. Only SwitchDevice breaks us out.
+                loop {
+                    match control_rx.recv() {
+                        Ok(ControlMsg::Play) => playing = true,
+                        Ok(ControlMsg::Pause) => playing = false,
+                        Ok(ControlMsg::SwitchDevice(new)) => {
+                            choice = new;
+                            break;
+                        }
+                        Err(_) => return,
+                    }
                 }
             }
         }
@@ -315,7 +445,9 @@ fn build_stream(
     }
     .context("build_input_stream")?;
 
-    stream.play().context("stream.play")?;
+    // Stream is left in the stopped state — IAudioClient::Start happens
+    // only when we later receive a Play message. This is what keeps the
+    // Win11 mic-in-use indicator off while the user isn't recording.
     Ok((stream, name))
 }
 

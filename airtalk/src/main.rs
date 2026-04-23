@@ -314,7 +314,10 @@ fn show_msgbox(msg: &str, is_error: bool) {
 /// VAD on, print the final `Result`.
 async fn run_dev_mic_timed(client: &CoreClient, seconds: u64) -> Result<()> {
     let config = settings::load_snapshot()?;
-    let mut audio = AudioCapture::start(settings::audio_choice_from_config(&config.config))?;
+    let mut audio = AudioCapture::start(
+        settings::audio_choice_from_config(&config.config),
+        config.config.audio.instant_record,
+    )?;
     log::info!("dev-mic: input = \"{}\"", audio.device_name());
 
     let id = client.begin(true).await?;
@@ -409,7 +412,8 @@ async fn run_hotkey_loop() -> Result<()> {
     let initial_snapshot = settings::load_snapshot()?;
     let mut current_mic = settings::audio_choice_from_config(&initial_snapshot.config);
     let mut current_hotkey = settings::hotkey_config_from_config(&initial_snapshot.config);
-    let mut audio = AudioCapture::start(current_mic.clone())?;
+    let mut current_instant_record = initial_snapshot.config.audio.instant_record;
+    let mut audio = AudioCapture::start(current_mic.clone(), current_instant_record)?;
     let overlay = Overlay::start(audio.level_source())?;
     let mut hotkey = Hotkey::start(current_hotkey)?;
     let mut tray = Tray::start(current_mic.clone())?;
@@ -588,7 +592,22 @@ async fn run_hotkey_loop() -> Result<()> {
                 match settings_ev {
                     Some(SettingsEvent::Applied(snapshot)) => {
                         let desired_mic = settings::audio_choice_from_config(&snapshot.config);
-                        if desired_mic != current_mic {
+                        let desired_instant_record = snapshot.config.audio.instant_record;
+                        // instant_record is a constructor parameter of
+                        // AudioCapture, so a change means a full rebuild.
+                        // We share the level Arc with Overlay, so reuse
+                        // it; otherwise the overlay waveform goes flat.
+                        if desired_instant_record != current_instant_record {
+                            let level = audio.level_source();
+                            audio = AudioCapture::restart_with_level(
+                                desired_mic.clone(),
+                                desired_instant_record,
+                                level,
+                            )?;
+                            current_mic = desired_mic.clone();
+                            current_instant_record = desired_instant_record;
+                            tray.set_current_mic(desired_mic);
+                        } else if desired_mic != current_mic {
                             audio.switch_to(desired_mic.clone());
                             tray.set_current_mic(desired_mic.clone());
                             current_mic = desired_mic;
