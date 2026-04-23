@@ -148,10 +148,8 @@ fn write_value(data: &str) -> Result<()> {
         }
         let value_name = wide(VALUE_NAME);
         let wide_data = wide(data);
-        let bytes = std::slice::from_raw_parts(
-            wide_data.as_ptr() as *const u8,
-            wide_data.len() * 2,
-        );
+        let bytes =
+            std::slice::from_raw_parts(wide_data.as_ptr() as *const u8, wide_data.len() * 2);
         let rc = RegSetValueExW(
             hkey,
             PCWSTR(value_name.as_ptr()),

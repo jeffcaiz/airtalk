@@ -81,9 +81,9 @@ const BORDER_ALPHA: f32 = 0.08;
 // Accent colors per state. f32 in [0,1] so alpha modulation is cheap.
 const RECORDING_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // red — matches Error
 const PROCESSING_RGB: [f32; 3] = [0.35, 0.78, 1.0]; // light blue
-// Cool teal-leaning green — reads "done" against the recording red and
-// processing blue without the highlighter-pen vibe of a pure #4ade80.
-// Roughly #38d699.
+                                                    // Cool teal-leaning green — reads "done" against the recording red and
+                                                    // processing blue without the highlighter-pen vibe of a pure #4ade80.
+                                                    // Roughly #38d699.
 const SUCCESS_RGB: [f32; 3] = [0.22, 0.84, 0.60];
 const ERROR_RGB: [f32; 3] = [1.0, 0.32, 0.32]; // same red as recording
 
@@ -508,7 +508,11 @@ fn draw_success_check(
     let mut pb = PathBuilder::new();
     pb.move_to(p1.0, p1.1);
     if drawn <= len_short {
-        let k = if len_short > 0.0 { drawn / len_short } else { 1.0 };
+        let k = if len_short > 0.0 {
+            drawn / len_short
+        } else {
+            1.0
+        };
         pb.line_to(p1.0 + (p2.0 - p1.0) * k, p1.1 + (p2.1 - p1.1) * k);
     } else {
         pb.line_to(p2.0, p2.1);

@@ -191,10 +191,12 @@ impl SlintBridge {
 
 fn run_settings_iteration() -> SettingsEvent {
     match settings::run_settings_window() {
-        Ok(Some(req)) => match settings::save_request(req).and_then(|_| settings::load_snapshot()) {
-            Ok(snapshot) => SettingsEvent::Applied(snapshot),
-            Err(e) => SettingsEvent::Failed(format!("{e:#}")),
-        },
+        Ok(Some(req)) => {
+            match settings::save_request(req).and_then(|_| settings::load_snapshot()) {
+                Ok(snapshot) => SettingsEvent::Applied(snapshot),
+                Err(e) => SettingsEvent::Failed(format!("{e:#}")),
+            }
+        }
         Ok(None) => SettingsEvent::Cancelled,
         Err(e) => SettingsEvent::Failed(format!("{e:#}")),
     }

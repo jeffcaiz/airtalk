@@ -32,7 +32,11 @@ fn main() -> ExitCode {
         }
     };
     target.pop();
-    target.push(if cfg!(windows) { "airtalk.exe" } else { "airtalk" });
+    target.push(if cfg!(windows) {
+        "airtalk.exe"
+    } else {
+        "airtalk"
+    });
 
     if !target.exists() {
         eprintln!(
