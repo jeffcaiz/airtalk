@@ -11,6 +11,11 @@ permissions:
 jobs:
   build-windows:
     runs-on: windows-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_TERM_COLOR: always
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v5
 
@@ -37,9 +42,12 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.6
+
       - uses: Swatinem/rust-cache@v2
         with:
-          key: x86_64-pc-windows-msvc
+          shared-key: x86_64-pc-windows-msvc
 
       - name: Build
         run: cargo build --release --workspace --target x86_64-pc-windows-msvc
