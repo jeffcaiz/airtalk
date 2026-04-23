@@ -349,6 +349,14 @@ async fn run_actor(
 
             ActorCmd::Shutdown => {
                 shutting_down = true;
+                // stdin EOF means no more Requests will arrive. If the
+                // caller disappeared without sending End/Cancel, close
+                // the active session's audio channel here so the
+                // pipeline finalizes with whatever audio it already has
+                // instead of waiting forever for more chunks.
+                if let Some(s) = current.as_mut() {
+                    s.audio_tx = None;
+                }
                 log::debug!("shutdown requested; draining in-flight session");
             }
         }

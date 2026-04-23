@@ -77,7 +77,10 @@ impl Args {
 }
 
 fn print_help() {
-    println!("AirTalk {} — voice input for Windows", env!("CARGO_PKG_VERSION"));
+    println!(
+        "AirTalk {} — voice input for Windows",
+        env!("CARGO_PKG_VERSION")
+    );
     println!();
     println!("Usage: airtalk [OPTIONS]");
     println!();
@@ -223,9 +226,7 @@ fn init_logging(debug: bool) {
 
     #[cfg(windows)]
     let console_attached = unsafe {
-        use windows::Win32::System::Console::{
-            AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS,
-        };
+        use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
         // Prefer the parent terminal's console if there is one — typical
         // when launched from PowerShell/cmd. If that fails and we're in
         // --debug mode, allocate a fresh console window so the developer
@@ -458,6 +459,8 @@ async fn run_hotkey_loop() -> Result<()> {
                         return Ok(());
                     }
                     Some(TrayEvent::OpenSettings) => {
+                        shutdown_current_session(&mut current_session, &audio, client.as_ref()).await;
+                        overlay.set_state(OverlayState::Idle);
                         log::info!("tray: Settings requested");
                         slint.open_settings();
                     }
