@@ -182,7 +182,7 @@ impl CoreClient {
             vad,
             context: None,
             language: None,
-            enable_itn: None,
+            enable_itn: Some(true),
             enable_llm: None,
         })
         .await?;
