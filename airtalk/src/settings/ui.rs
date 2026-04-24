@@ -135,18 +135,57 @@ pub(crate) fn run_settings_window() -> Result<Option<SaveRequest>> {
     }))
 }
 
+/// Build the ComboBox model + selected index.
+///
+/// Layout, in order:
+///   * **0** — Auto, labeled with whatever the OS default resolves to
+///     right now (`"Auto (Realtek …)"`), so the user sees the concrete
+///     device Auto currently binds to.
+///   * **1** — *Only when* the user's preferred `Named(x)` is not in
+///     the current enumeration, a synthetic `"<x> [inactive]"` row.
+///     Selected by default so the user's sticky choice is visible even
+///     while the device is disconnected; re-saving preserves it.
+///     Slint ComboBox has no per-item disabled state, so the row is
+///     selectable — but selecting the already-selected current choice
+///     is a no-op, and picking a real device / Auto overrides it
+///     explicitly, which is the whole point.
+///   * **2..** (or **1..** if no inactive row) — live devices from cpal,
+///     in enumeration order.
 fn device_options(current: &AppConfig) -> (Vec<SharedString>, i32) {
+    let choice = audio_choice_from_config(current);
     let devices = audio::list_input_devices();
-    let mut options: Vec<SharedString> = Vec::with_capacity(1 + devices.len());
-    options.push("Auto (system default)".into());
-    options.extend(devices.into_iter().map(Into::into));
 
-    let selected = match audio_choice_from_config(current) {
+    let auto_label = match audio::current_default_input_name() {
+        Some(name) => format!("Auto ({})", audio::display_device_name(&name)),
+        None => "Auto (no device)".to_string(),
+    };
+
+    let preferred_missing = match &choice {
+        DeviceChoice::Named(name) => !devices.iter().any(|d| d == name),
+        DeviceChoice::Auto => false,
+    };
+
+    let mut options: Vec<SharedString> = Vec::with_capacity(2 + devices.len());
+    options.push(auto_label.into());
+    if preferred_missing {
+        if let DeviceChoice::Named(name) = &choice {
+            options.push(format!("{} [inactive]", audio::display_device_name(name)).into());
+        }
+    }
+    for name in &devices {
+        options.push(SharedString::from(audio::display_device_name(name)));
+    }
+
+    // Match against the raw enumeration (not `options`, which now
+    // carries display-stripped labels) so the stored Named(x) — which
+    // is always the Windows-full name — still resolves to the right row.
+    let selected = match &choice {
         DeviceChoice::Auto => 0,
-        DeviceChoice::Named(name) => options
+        DeviceChoice::Named(_) if preferred_missing => 1,
+        DeviceChoice::Named(name) => devices
             .iter()
-            .position(|s| s.as_str() == name)
-            .map(|idx| idx as i32)
+            .position(|d| d == name)
+            .map(|idx| (idx as i32) + 1)
             .unwrap_or(0),
     };
     (options, selected)
@@ -156,9 +195,23 @@ fn selected_device(index: i32, current: &AppConfig) -> String {
     if index <= 0 {
         return "auto".into();
     }
+    let choice = audio_choice_from_config(current);
     let devices = audio::list_input_devices();
+    let preferred_missing = match &choice {
+        DeviceChoice::Named(name) => !devices.iter().any(|d| d == name),
+        DeviceChoice::Auto => false,
+    };
+
+    // Match the layout built in `device_options`: the inactive row sits
+    // at index 1 when present, real devices start one slot later.
+    if preferred_missing && index == 1 {
+        if let DeviceChoice::Named(name) = &choice {
+            return name.clone();
+        }
+    }
+    let device_offset = if preferred_missing { 2 } else { 1 };
     devices
-        .get((index as usize).saturating_sub(1))
+        .get((index as usize).saturating_sub(device_offset))
         .cloned()
         .unwrap_or_else(|| current.audio.input_device.clone())
 }

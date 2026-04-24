@@ -79,6 +79,27 @@ pub(crate) enum ControlMsg {
     Play,
     Pause,
     Reevaluate,
+    /// Sent from cpal's `err_fn` (dedup'd to once per stream) when the
+    /// underlying WASAPI stream dies — device unplugged, Bluetooth
+    /// battery ran out, driver restarted, etc. The audio thread drops
+    /// the broken stream, emits [`AudioEvent::StreamDied`] so the UI
+    /// can abort any active recording, and rebuilds (falling back to
+    /// `Auto` if the preferred device is really gone).
+    StreamError,
+}
+
+/// Asynchronous events the audio subsystem raises to the main UI loop.
+///
+/// Only used for conditions that can't be inferred from the PCM stream
+/// alone — today just "the cpal stream died under us" so the UI can
+/// end a recording session it would otherwise leave dangling.
+#[derive(Debug)]
+pub enum AudioEvent {
+    /// The capture stream encountered a fatal error and has been (or is
+    /// being) torn down. Any in-flight recording is lost; the audio
+    /// thread is rebuilding and a future `open_gate` will work once the
+    /// rebuild lands.
+    StreamDied,
 }
 
 /// Handle to a running capture stream. Drop to stop capture.
@@ -86,6 +107,11 @@ pub struct AudioCapture {
     gate: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
     pcm_rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    /// Stored as `Option` so `take_events` can hand out the receiver
+    /// once. The main loop owns it as a sibling of `AudioCapture` so
+    /// `recv()` (PCM) and the events receiver can both appear in the
+    /// same `tokio::select!` without borrowing `audio` twice.
+    event_rx: Option<mpsc::UnboundedReceiver<AudioEvent>>,
     control_tx: std::sync::mpsc::Sender<ControlMsg>,
     device_name: Arc<Mutex<String>>,
     /// User setting: when true, the stream stays in WASAPI Start state
@@ -141,12 +167,14 @@ impl AudioCapture {
         let level = reused_level.unwrap_or_else(|| Arc::new(AtomicU32::new(0)));
         let device_name = Arc::new(Mutex::new(String::new()));
         let (pcm_tx, pcm_rx) = mpsc::unbounded_channel();
+        let (event_tx, event_rx) = mpsc::unbounded_channel::<AudioEvent>();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlMsg>();
         let (init_tx, init_rx) = std::sync::mpsc::channel::<Result<()>>();
 
         let gate_c = gate.clone();
         let level_c = level.clone();
         let device_name_c = device_name.clone();
+        let control_tx_for_thread = control_tx.clone();
         let thread = std::thread::Builder::new()
             .name("airtalk-audio".into())
             .spawn(move || {
@@ -156,6 +184,8 @@ impl AudioCapture {
                     gate_c,
                     level_c,
                     pcm_tx,
+                    event_tx,
+                    control_tx_for_thread,
                     control_rx,
                     init_tx,
                     device_name_c,
@@ -185,6 +215,7 @@ impl AudioCapture {
             gate,
             level,
             pcm_rx,
+            event_rx: Some(event_rx),
             control_tx,
             device_name,
             instant_record,
@@ -249,6 +280,15 @@ impl AudioCapture {
         self.pcm_rx.recv().await
     }
 
+    /// Take the audio-event receiver out of this handle. Call exactly
+    /// once from the main loop — holding the receiver as a sibling
+    /// variable lets the select! poll PCM (`recv()`, `&mut audio`) and
+    /// events (`&mut events`) without a double mutable borrow.
+    /// Returns `None` on the second call.
+    pub fn take_events(&mut self) -> Option<mpsc::UnboundedReceiver<AudioEvent>> {
+        self.event_rx.take()
+    }
+
     /// Drain any chunks already queued from a previous gate-open cycle.
     /// Useful after `close_gate`: the audio thread may have pushed one or
     /// two chunks that raced the gate observation, and those would otherwise
@@ -282,6 +322,52 @@ pub fn list_input_devices() -> Vec<String> {
     }
 }
 
+/// Name of whatever cpal reports as the default input device right now.
+/// Used by the tray menu to label the Auto row with the concrete device
+/// it currently resolves to. Returns `None` if no input device is
+/// available.
+pub fn current_default_input_name() -> Option<String> {
+    cpal::default_host()
+        .default_input_device()
+        .and_then(|d| d.name().ok())
+}
+
+/// Strip the localized form-factor prefix Windows composes into
+/// `PKEY_Device_FriendlyName` (`"耳机 (DJI Mic …)"`, `"Microphone
+/// (Realtek …)"`), leaving just the device-reported description inside
+/// the parens. Display-only — callers keep storing/matching against
+/// the raw name so `DeviceChoice::Named` still round-trips through
+/// cpal's enumeration.
+///
+/// Heuristic, not a parser:
+///   * If the trimmed string ends in `)` *and* contains `(` with at
+///     least one non-whitespace char before it, take the substring
+///     between the first `(` and the last `)` (handles nested parens
+///     like `"Microphone (Logitech BRIO (UC))"`).
+///   * If the inner content would be empty, or any guard fails, return
+///     the original name — safer to show Windows's full label than to
+///     produce an empty row.
+///   * Names without a trailing `)` (e.g. user-renamed in Sound panel,
+///     or non-standard drivers) are returned untouched.
+pub fn display_device_name(raw: &str) -> String {
+    let trimmed = raw.trim_end();
+    if !trimmed.ends_with(')') {
+        return raw.to_string();
+    }
+    let Some(open) = trimmed.find('(') else {
+        return raw.to_string();
+    };
+    let prefix = &trimmed[..open];
+    if prefix.trim().is_empty() {
+        return raw.to_string();
+    }
+    let inner = &trimmed[open + 1..trimmed.len() - 1];
+    if inner.trim().is_empty() {
+        return raw.to_string();
+    }
+    inner.to_string()
+}
+
 /// Placeholder name used when no device is currently open. Callers
 /// (tray / settings) can spot it with `device_name().starts_with("<")`.
 const NO_DEVICE_NAME: &str = "<no input device>";
@@ -293,6 +379,8 @@ fn run_capture_thread(
     gate: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
+    event_tx: mpsc::UnboundedSender<AudioEvent>,
+    control_tx: std::sync::mpsc::Sender<ControlMsg>,
     control_rx: std::sync::mpsc::Receiver<ControlMsg>,
     init_tx: std::sync::mpsc::Sender<Result<()>>,
     device_name: Arc<Mutex<String>>,
@@ -319,7 +407,13 @@ fn run_capture_thread(
 
         let mut opened: Option<(cpal::Stream, String)> = None;
         for attempt in &attempts {
-            match build_stream(attempt, gate.clone(), level.clone(), tx.clone()) {
+            match build_stream(
+                attempt,
+                gate.clone(),
+                level.clone(),
+                tx.clone(),
+                control_tx.clone(),
+            ) {
                 Ok(result) => {
                     if attempt != &choice {
                         log::warn!(
@@ -408,6 +502,23 @@ fn run_capture_thread(
                                 break true;
                             }
                         }
+                        Ok(ControlMsg::StreamError) => {
+                            // cpal's err_fn signalled the stream is dead
+                            // (device unplugged / BT out of range / driver
+                            // reset). Unlike Reevaluate we don't defer on
+                            // gate=true — there's nothing to protect, the
+                            // stream is already gone. Force the gate shut
+                            // so any lingering process() callbacks drop
+                            // their residual samples, then wake the UI so
+                            // it can abort the session the user thinks is
+                            // still running.
+                            log::warn!(
+                                "audio: stream on \"{resolved_name}\" died, rebuilding"
+                            );
+                            gate.store(false, Ordering::Release);
+                            let _ = event_tx.send(AudioEvent::StreamDied);
+                            break true;
+                        }
                         Err(_) => break false,
                     }
                 };
@@ -445,6 +556,15 @@ fn run_capture_thread(
                         }
                         Ok(ControlMsg::Reevaluate) => {
                             log::info!("audio: device change while idle, retrying open");
+                            break;
+                        }
+                        Ok(ControlMsg::StreamError) => {
+                            // Stream error while we have no stream — only
+                            // possible if a message from a previous stream
+                            // races the transition into None. Harmless:
+                            // retry the open to pick up whatever's
+                            // actually there now.
+                            log::warn!("audio: stray stream error while idle, retrying open");
                             break;
                         }
                         Err(_) => return,
@@ -497,6 +617,7 @@ fn build_stream(
     gate: Arc<AtomicBool>,
     level: Arc<AtomicU32>,
     tx: mpsc::UnboundedSender<Vec<u8>>,
+    control_tx: std::sync::mpsc::Sender<ControlMsg>,
 ) -> Result<(cpal::Stream, String)> {
     let host = cpal::default_host();
     let device = match choice {
@@ -521,7 +642,18 @@ fn build_stream(
     log::info!("audio: {name} @ {device_sr} Hz, {device_channels} ch, {sample_format:?}");
 
     let mut state = CaptureState::new(device_sr, device_channels);
-    let err_fn = |e| log::error!("audio stream error: {e}");
+    // cpal's err_fn can fire repeatedly once a device dies (every queued
+    // callback notices). Dedupe so the audio thread sees exactly one
+    // `StreamError`, matching the lifetime of this particular stream —
+    // the Arc is fresh per build_stream call.
+    let errored = Arc::new(AtomicBool::new(false));
+    let err_name = name.clone();
+    let err_fn = move |e: cpal::StreamError| {
+        log::error!("audio stream error on \"{err_name}\": {e}");
+        if !errored.swap(true, Ordering::AcqRel) {
+            let _ = control_tx.send(ControlMsg::StreamError);
+        }
+    };
 
     let stream = match sample_format {
         SampleFormat::F32 => device.build_input_stream(

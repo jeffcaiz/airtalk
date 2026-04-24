@@ -42,7 +42,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     DestroyMenu, DestroyWindow, DispatchMessageW, GetCursorPos, GetMessageW, LoadCursorW,
     PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW, SetForegroundWindow,
     TrackPopupMenu, TranslateMessage, CS_HREDRAW, CS_VREDRAW, HICON, HMENU, ICONINFO, IDC_ARROW,
-    MF_CHECKED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
+    MF_CHECKED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, TPM_BOTTOMALIGN, TPM_LEFTALIGN,
     TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_DESTROY, WM_LBUTTONDBLCLK, WM_QUIT, WM_RBUTTONUP,
     WNDCLASSEXW, WS_OVERLAPPED,
 };
@@ -66,6 +66,11 @@ const MENU_ID_AUTOSTART: u32 = 1003;
 const MENU_ID_MIC_AUTO: u32 = 2000;
 const MENU_ID_MIC_BASE: u32 = 2001;
 const MENU_ID_MIC_MAX: u32 = 2999; // 999 devices is plenty
+/// Synthetic row for a user-preferred device that isn't currently
+/// enumerable. Always appended with `MF_GRAYED` so it can't be clicked,
+/// and is never placed in `LAST_MIC_LIST`; the constant exists only
+/// because Win32 requires *some* ID on every menu item.
+const MENU_ID_MIC_INACTIVE: u32 = 1999;
 
 // ─── Public API ────────────────────────────────────────────────────────
 
@@ -405,6 +410,7 @@ unsafe fn show_context_menu(hwnd: HWND) {
         MENU_ID_AUTOSTART,
         "Launch at Startup",
         crate::autostart::is_enabled(),
+        false,
     );
 
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -444,18 +450,46 @@ unsafe fn build_mic_submenu() -> Option<HMENU> {
     let devices = audio::list_input_devices();
 
     // Remember this exact list so WM_COMMAND can map index → name.
+    // The inactive synthetic row (if any) is NOT stored here — it uses
+    // its own dedicated ID and is non-clickable anyway.
     if let Some(cell) = LAST_MIC_LIST.get() {
         if let Ok(mut guard) = cell.lock() {
             *guard = devices.clone();
         }
     }
 
-    // Auto row.
+    // Auto row: append whatever cpal currently resolves the default to,
+    // so the user sees the concrete device Auto maps to right now. Keeps
+    // them from second-guessing which mic is actually live. Strip the
+    // Windows form-factor prefix so we don't end up with "Auto (耳机
+    // (DJI…))" — double parens look terrible.
+    let auto_label = match audio::current_default_input_name() {
+        Some(name) => format!("Auto ({})", audio::display_device_name(&name)),
+        None => "Auto (no device)".to_string(),
+    };
     let auto_checked = matches!(current, DeviceChoice::Auto);
-    append_checkable(sub, MENU_ID_MIC_AUTO, "Auto (system default)", auto_checked);
+    append_checkable(sub, MENU_ID_MIC_AUTO, &auto_label, auto_checked, false);
 
-    if !devices.is_empty() {
+    // Build the device rows. If the user's Named choice isn't in the
+    // enumeration, prepend a grayed "<name> [inactive]" row with the
+    // checkmark — their selection is sticky across disconnect, we only
+    // fall back to Auto for capture. When the preferred device returns,
+    // the IMMNotificationClient watcher swings capture back to it and
+    // this row becomes a normal enabled row on the next menu open.
+    let preferred_missing = match &current {
+        DeviceChoice::Named(name) => !devices.iter().any(|d| d == name),
+        DeviceChoice::Auto => false,
+    };
+
+    if preferred_missing || !devices.is_empty() {
         let _ = AppendMenuW(sub, MF_SEPARATOR, 0, PCWSTR::null());
+    }
+
+    if preferred_missing {
+        if let DeviceChoice::Named(name) = &current {
+            let label = format!("{} [inactive]", audio::display_device_name(name));
+            append_checkable(sub, MENU_ID_MIC_INACTIVE, &label, true, true);
+        }
     }
 
     for (i, name) in devices.iter().enumerate() {
@@ -464,7 +498,8 @@ unsafe fn build_mic_submenu() -> Option<HMENU> {
         }
         let id = MENU_ID_MIC_BASE + i as u32;
         let checked = matches!(&current, DeviceChoice::Named(n) if n == name);
-        append_checkable(sub, id, name, checked);
+        let label = audio::display_device_name(name);
+        append_checkable(sub, id, &label, checked, false);
     }
 
     Some(sub)
@@ -475,13 +510,17 @@ unsafe fn append_item(menu: HMENU, id: u32, label: &str) {
     let _ = AppendMenuW(menu, MF_STRING, id as usize, PCWSTR(wide.as_ptr()));
 }
 
-unsafe fn append_checkable(menu: HMENU, id: u32, label: &str, checked: bool) {
+unsafe fn append_checkable(menu: HMENU, id: u32, label: &str, checked: bool, grayed: bool) {
     let wide: Vec<u16> = label.encode_utf16().chain(std::iter::once(0)).collect();
-    let flags = if checked {
-        MF_STRING | MF_CHECKED
-    } else {
-        MF_STRING
-    };
+    let mut flags = MF_STRING;
+    if checked {
+        flags |= MF_CHECKED;
+    }
+    if grayed {
+        // MF_GRAYED implies disabled + grayed-out text; clicks don't
+        // generate WM_COMMAND for the item.
+        flags |= MF_GRAYED;
+    }
     let _ = AppendMenuW(menu, flags, id as usize, PCWSTR(wide.as_ptr()));
 }
 

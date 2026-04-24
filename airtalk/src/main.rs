@@ -49,7 +49,7 @@ use anyhow::{Context, Result};
 use std::time::{Duration, Instant};
 
 use airtalk_proto::Response;
-use audio::AudioCapture;
+use audio::{AudioCapture, AudioEvent};
 use core_client::CoreClient;
 use hotkey::{Hotkey, HotkeyEvent};
 use overlay::{Overlay, OverlayState};
@@ -417,6 +417,9 @@ async fn run_hotkey_loop() -> Result<()> {
     let mut current_hotkey = settings::hotkey_config_from_config(&initial_snapshot.config);
     let mut current_instant_record = initial_snapshot.config.audio.instant_record;
     let mut audio = AudioCapture::start(current_mic.clone(), current_instant_record)?;
+    let mut audio_events = audio
+        .take_events()
+        .expect("take_events never called before");
     let overlay = Overlay::start(audio.level_source())?;
     let mut hotkey = Hotkey::start(current_hotkey)?;
     let mut tray = Tray::start(current_mic.clone())?;
@@ -495,6 +498,37 @@ async fn run_hotkey_loop() -> Result<()> {
                         }
                     }
                     None => anyhow::bail!("audio thread died"),
+                }
+            }
+            audio_ev = audio_events.recv() => {
+                match audio_ev {
+                    Some(AudioEvent::StreamDied) => {
+                        // Capture stream died under us (unplugged mic,
+                        // BT battery out, driver reset). Rather than
+                        // cancel and throw away everything the user
+                        // just said, force-finalize the session the
+                        // same way a hotkey release would — core runs
+                        // ASR on whatever PCM made it through, the
+                        // normal Result path fires, and the partial
+                        // transcript gets pasted. Losing a few hundred
+                        // ms of tail audio beats losing the whole turn.
+                        if let Some(id) = current_session.take() {
+                            log::warn!(
+                                "audio: stream died mid-session {id} — finalizing early"
+                            );
+                            audio.close_gate();
+                            let _ = audio.drain_pending();
+                            if let Some(client) = client.as_ref() {
+                                if let Err(e) = client.end(id).await {
+                                    log::warn!("client.end after stream death failed: {e}");
+                                }
+                            }
+                            overlay.set_state(OverlayState::Processing);
+                        }
+                        // No active session → audio thread is rebuilding
+                        // in the background; nothing for the UI to show.
+                    }
+                    None => { /* audio thread exited; other branches will bail */ }
                 }
             }
             rec_ev = slint_events.recovery.recv() => {
@@ -609,6 +643,13 @@ async fn run_hotkey_loop() -> Result<()> {
                                 desired_instant_record,
                                 level,
                             )?;
+                            // The old event receiver is dropped with the
+                            // old AudioCapture; pull a fresh one off the
+                            // new instance so select! keeps observing
+                            // stream-died events.
+                            audio_events = audio
+                                .take_events()
+                                .expect("take_events never called before");
                             current_mic = desired_mic.clone();
                             current_instant_record = desired_instant_record;
                             tray.set_current_mic(desired_mic);
