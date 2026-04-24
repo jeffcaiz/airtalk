@@ -137,7 +137,7 @@ dependencies = [
 
 [[package]]
 name = "airtalk"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "airtalk-proto",
  "anyhow",
@@ -159,7 +159,7 @@ dependencies = [
 
 [[package]]
 name = "airtalk-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "airtalk-proto",
  "anyhow",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "airtalk-proto"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "base64",
  "serde",
