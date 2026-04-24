@@ -152,6 +152,8 @@ dependencies = [
  "tokio",
  "toml 0.8.23",
  "windows 0.59.0",
+ "windows-core 0.59.0",
+ "windows-implement 0.59.0",
  "winres",
 ]
 

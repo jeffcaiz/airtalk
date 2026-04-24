@@ -60,7 +60,20 @@ features = [
     "Win32_UI_Shell",
     "Win32_UI_HiDpi",
     "Win32_System_Console",
+    "Win32_System_Com",
     "Win32_Graphics_Dwm",
     "Win32_Security_Credentials",
     "Win32_System_Registry",
+    "Win32_Media_Audio",
 ]
+
+# `#[implement]` macro for authoring COM objects in Rust, used by
+# audio_watch.rs for IMMNotificationClient. The macro expands to paths
+# rooted at `::windows_core::…`, so we also pin `windows-core` directly
+# (rather than relying on the `windows::core` re-export) to give the
+# generated code a crate to resolve against.
+[target.'cfg(windows)'.dependencies.windows-implement]
+version = "0.59"
+
+[target.'cfg(windows)'.dependencies.windows-core]
+version = "0.59"

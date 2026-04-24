@@ -28,6 +28,8 @@
 
 mod audio;
 #[cfg(windows)]
+mod audio_watch;
+#[cfg(windows)]
 mod autostart;
 mod core_client;
 mod hotkey;

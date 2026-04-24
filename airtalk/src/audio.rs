@@ -68,10 +68,17 @@ pub enum DeviceChoice {
     Named(String),
 }
 
-enum ControlMsg {
+/// Messages the public API and the [`crate::audio_watch::DeviceWatcher`]
+/// send into the capture thread.
+///
+/// `Reevaluate` is sent by the OS device-change watcher on hotplug /
+/// default-device-changed events; the audio thread decides whether to
+/// rebuild based on what actually differs (see `device_world_differs`).
+pub(crate) enum ControlMsg {
     SwitchDevice(DeviceChoice),
     Play,
     Pause,
+    Reevaluate,
 }
 
 /// Handle to a running capture stream. Drop to stop capture.
@@ -86,6 +93,12 @@ pub struct AudioCapture {
     /// Windows shows the mic-in-use indicator continuously. Determines
     /// whether `open_gate`/`close_gate` bother sending Play/Pause.
     instant_record: bool,
+    /// IMMNotificationClient-backed watcher. Kept as a field so it's
+    /// dropped before the audio thread's control_tx clone, closing the
+    /// channel and letting the capture thread exit on shutdown. `None`
+    /// on non-Windows or if registration failed (audio still works).
+    #[cfg(windows)]
+    _watcher: Option<crate::audio_watch::DeviceWatcher>,
     _thread: JoinHandle<()>,
 }
 
@@ -155,6 +168,19 @@ impl AudioCapture {
             .context("audio thread init timeout (3 s)")?
             .context("audio thread init error")?;
 
+        // Register for OS device change events so `Auto` follows the new
+        // system default, and `Named` can recover when its device comes
+        // back. Failure is non-fatal — we'd just lose auto-refresh, not
+        // capture itself.
+        #[cfg(windows)]
+        let watcher = match crate::audio_watch::DeviceWatcher::start(control_tx.clone()) {
+            Ok(w) => Some(w),
+            Err(e) => {
+                log::warn!("device watcher unavailable: {e:#}");
+                None
+            }
+        };
+
         Ok(Self {
             gate,
             level,
@@ -162,6 +188,8 @@ impl AudioCapture {
             control_tx,
             device_name,
             instant_record,
+            #[cfg(windows)]
+            _watcher: watcher,
             _thread: thread,
         })
     }
@@ -330,7 +358,13 @@ fn run_capture_thread(
                 // Serve control messages until the user asks to switch
                 // devices, at which point we drop this stream and loop
                 // to rebuild on the new choice.
-                loop {
+                //
+                // `pending_reeval` is set when a Reevaluate arrives
+                // mid-recording (gate=true). We can't rebuild while the
+                // user is actively capturing without corrupting their
+                // session, so we defer the check to the next Pause.
+                let mut pending_reeval = false;
+                let should_rebuild = loop {
                     match control_rx.recv() {
                         Ok(ControlMsg::Play) => {
                             if !playing {
@@ -349,15 +383,38 @@ fn run_capture_thread(
                                     playing = false;
                                 }
                             }
+                            if pending_reeval && !gate.load(Ordering::Acquire) {
+                                pending_reeval = false;
+                                if device_world_differs(&choice, &resolved_name) {
+                                    log::info!(
+                                        "audio: deferred reeval — device landscape changed, rebuilding"
+                                    );
+                                    break true;
+                                }
+                            }
                         }
                         Ok(ControlMsg::SwitchDevice(new)) => {
                             choice = new;
-                            break;
+                            break true;
                         }
-                        Err(_) => return,
+                        Ok(ControlMsg::Reevaluate) => {
+                            if gate.load(Ordering::Acquire) {
+                                // User is recording right now; defer.
+                                pending_reeval = true;
+                            } else if device_world_differs(&choice, &resolved_name) {
+                                log::info!(
+                                    "audio: device landscape changed, rebuilding (was \"{resolved_name}\")"
+                                );
+                                break true;
+                            }
+                        }
+                        Err(_) => break false,
                     }
-                }
+                };
                 drop(stream);
+                if !should_rebuild {
+                    return;
+                }
             }
             None => {
                 // All attempts failed — no cpal device available right now.
@@ -375,7 +432,9 @@ fn run_capture_thread(
                 }
                 // Eat Play/Pause while we have nothing to control; they
                 // just set the desired state for the next successful
-                // open. Only SwitchDevice breaks us out.
+                // open. SwitchDevice or Reevaluate break us out — the
+                // latter is what lets a plugged-in device wake us from
+                // the idle state without the user touching the tray.
                 loop {
                     match control_rx.recv() {
                         Ok(ControlMsg::Play) => playing = true,
@@ -384,9 +443,50 @@ fn run_capture_thread(
                             choice = new;
                             break;
                         }
+                        Ok(ControlMsg::Reevaluate) => {
+                            log::info!("audio: device change while idle, retrying open");
+                            break;
+                        }
                         Err(_) => return,
                     }
                 }
+            }
+        }
+    }
+}
+
+/// Decide whether the current cpal stream should be torn down and
+/// rebuilt in response to an OS device-change event.
+///
+/// `resolved_name` is whatever `build_stream` actually opened (which
+/// may differ from `choice` if we're in the `Named → Auto` fallback).
+/// The audio thread holds that locally and passes it in — we don't need
+/// to lock the shared `device_name` mutex here.
+///
+/// - `Auto`: rebuild iff the OS default input device is no longer the
+///   one we're on. This is how we follow a Bluetooth mic that becomes
+///   the default after connect.
+/// - `Named(x)`: rebuild iff either (a) we're on a different device
+///   than `x` (meaning we were in Auto fallback) AND `x` is now back in
+///   the device list, or (b) we're on `x` but `x` has since vanished.
+fn device_world_differs(choice: &DeviceChoice, resolved_name: &str) -> bool {
+    let host = cpal::default_host();
+    match choice {
+        DeviceChoice::Auto => match host.default_input_device().and_then(|d| d.name().ok()) {
+            Some(name) => name != resolved_name,
+            // No default available now. If we were already on a device,
+            // signal rebuild so we drop into the None-branch cleanly.
+            None => true,
+        },
+        DeviceChoice::Named(name) => {
+            let devices = list_input_devices();
+            let have_preferred = devices.iter().any(|d| d == name);
+            if resolved_name != name.as_str() {
+                // In fallback — come back to preferred if it reappeared.
+                have_preferred
+            } else {
+                // On preferred — only rebuild if it's actually gone.
+                !have_preferred
             }
         }
     }
